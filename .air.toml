@@ -1,0 +1,20 @@
+# Hot reload configuration for development
+# Install air: go install github.com/air-verse/air@latest
+# Usage: air
+
+root = "."
+tmp_dir = "tmp"
+
+[build]
+  cmd = "go build -o ./tmp/ojs-server ./cmd/ojs-server"
+  bin = "tmp/ojs-server"
+  include_ext = ["go", "lua", "sql"]
+  exclude_dir = ["tmp", "vendor", "bin", "docker"]
+  exclude_regex = ["_test\\.go$"]
+  delay = 1000  # ms
+
+[log]
+  time = false
+
+[misc]
+  clean_on_exit = true
