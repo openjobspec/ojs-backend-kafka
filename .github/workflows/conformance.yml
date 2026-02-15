@@ -1,0 +1,115 @@
+name: Conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    services:
+      kafka:
+        image: bitnami/kafka:3.7
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_CFG_NODE_ID: 0
+          KAFKA_CFG_PROCESS_ROLES: controller,broker
+          KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 0@localhost:9093
+          KAFKA_CFG_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_CFG_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+          KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+        options: >-
+          --health-cmd "kafka-topics.sh --bootstrap-server localhost:9092 --list"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: openjobspec/openjobspec
+          path: openjobspec
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: openjobspec/ojs-backend-kafka/go.mod
+
+      - name: Build server
+        working-directory: openjobspec/ojs-backend-kafka
+        run: go build -o bin/ojs-server ./cmd/ojs-server
+
+      - name: Build conformance runner
+        working-directory: openjobspec/ojs-conformance
+        run: go build -o bin/ojs-conformance ./runner/http/
+
+      - name: Start server
+        working-directory: openjobspec/ojs-backend-kafka
+        run: |
+          KAFKA_BROKERS=localhost:9092 REDIS_URL=redis://localhost:6379 ./bin/ojs-server &
+          sleep 3
+          curl -sf http://localhost:8080/ojs/v1/health
+
+      - name: Run conformance tests
+        id: conformance
+        run: |
+          set +e
+          OUTPUT=$(openjobspec/ojs-conformance/bin/ojs-conformance \
+            -url http://localhost:8080 \
+            -suites openjobspec/ojs-conformance/suites \
+            -redis redis://localhost:6379 2>&1)
+          EXIT_CODE=$?
+          echo "$OUTPUT"
+          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
+
+          LEVEL="none"
+          for L in 0 1 2 3 4; do
+            if echo "$OUTPUT" | grep -q "Level ${L}.*PASS\|level-${L}.*PASS\|Level${L}.*PASS"; then
+              LEVEL="$L"
+            fi
+          done
+          if [ "$EXIT_CODE" -eq 0 ]; then
+            LEVEL="4"
+          fi
+          echo "level=$LEVEL" >> "$GITHUB_OUTPUT"
+          exit $EXIT_CODE
+
+      - name: Generate conformance badge
+        if: github.ref == 'refs/heads/main' && always()
+        run: |
+          LEVEL="${{ steps.conformance.outputs.level }}"
+          if [ "$LEVEL" = "none" ]; then
+            COLOR="red"
+            LABEL="failing"
+          else
+            COLOR="brightgreen"
+            LABEL="Level%20${LEVEL}"
+          fi
+          mkdir -p openjobspec/ojs-backend-kafka/.github/badges
+          curl -s "https://img.shields.io/badge/OJS%20Conformance-${LABEL}-${COLOR}" \
+            -o openjobspec/ojs-backend-kafka/.github/badges/conformance.svg
+
+      - name: Commit badge
+        if: github.ref == 'refs/heads/main' && always()
+        working-directory: openjobspec/ojs-backend-kafka
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add .github/badges/conformance.svg 2>/dev/null || true
+          git diff --cached --quiet || git commit -m "chore: update conformance badge [skip ci]"
+          git push || true
