@@ -177,7 +177,7 @@ func (b *KafkaBackend) Fetch(ctx context.Context, queues []string, count int, wo
 			// Compute visibility deadline
 			effectiveVisTimeout := visibilityTimeoutMs
 			if effectiveVisTimeout <= 0 {
-				effectiveVisTimeout = 30000
+				effectiveVisTimeout = core.DefaultVisibilityTimeoutMs
 			}
 			deadline := core.FormatTime(now.Add(time.Duration(effectiveVisTimeout) * time.Millisecond))
 

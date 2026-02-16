@@ -132,7 +132,7 @@ func (s *Server) Fetch(ctx context.Context, req *ojsv1.FetchRequest) (*ojsv1.Fet
 		count = 1
 	}
 
-	visibilityMs := 30000
+	visibilityMs := core.DefaultVisibilityTimeoutMs
 
 	jobs, err := s.backend.Fetch(ctx, req.Queues, count, req.WorkerId, visibilityMs)
 	if err != nil {
@@ -186,7 +186,7 @@ func (s *Server) Nack(ctx context.Context, req *ojsv1.NackRequest) (*ojsv1.NackR
 }
 
 func (s *Server) Heartbeat(ctx context.Context, req *ojsv1.HeartbeatRequest) (*ojsv1.HeartbeatResponse, error) {
-	visibilityMs := 30000
+	visibilityMs := core.DefaultVisibilityTimeoutMs
 
 	hbResp, err := s.backend.Heartbeat(ctx, req.WorkerId, nil, visibilityMs)
 	if err != nil {

@@ -139,7 +139,7 @@ func (h *WorkerHandler) Heartbeat(w http.ResponseWriter, r *http.Request) {
 		activeJobs = []string{req.JobID}
 	}
 
-	visTimeout := 30000
+	visTimeout := core.DefaultVisibilityTimeoutMs
 	if req.VisibilityTimeoutMs != nil && *req.VisibilityTimeoutMs > 0 {
 		visTimeout = *req.VisibilityTimeoutMs
 	}
