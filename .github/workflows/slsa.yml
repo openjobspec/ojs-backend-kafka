@@ -1,0 +1,50 @@
+name: SLSA Provenance
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions: read-all
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      hashes: ${{ steps.hash.outputs.hashes }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build
+        run: |
+          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o bin/ojs-server ./cmd/ojs-server
+
+      - name: Generate hashes
+        id: hash
+        run: |
+          cd bin
+          sha256sum ojs-server > checksums.txt
+          echo "hashes=$(sha256sum ojs-server | base64 -w0)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: ojs-server
+          path: |
+            bin/ojs-server
+            bin/checksums.txt
+
+  provenance:
+    needs: build
+    permissions:
+      actions: read
+      id-token: write
+      contents: write
+    uses: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml@v2.1.0
+    with:
+      base64-subjects: "${{ needs.build.outputs.hashes }}"
+      upload-assets: true
