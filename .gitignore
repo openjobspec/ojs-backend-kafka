@@ -9,3 +9,4 @@ bin/
 *.prof
 .env
 .env.local
+ojs-server
