@@ -124,6 +124,16 @@ make run
 make build          # Build server binary to bin/ojs-server
 make test           # go test ./... -race -cover
 make lint           # go vet ./...
+make run            # Build and run (needs Kafka + Redis)
+make docker-up      # Start server + Kafka + Redis via Docker Compose
+make docker-down    # Stop Docker Compose
+```
+
+### Development with Hot Reload
+
+```bash
+make dev            # Local hot reload (requires air)
+make docker-dev     # Docker Compose with hot reload
 ```
 
 ## Conformance
