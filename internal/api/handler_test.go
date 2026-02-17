@@ -39,6 +39,8 @@ type mockBackend struct {
 	getWorkflowFunc    func(ctx context.Context, id string) (*core.Workflow, error)
 	cancelWorkflowFunc func(ctx context.Context, id string) (*core.Workflow, error)
 	advanceWorkflowFunc func(ctx context.Context, workflowID string, jobID string, result json.RawMessage, failed bool) error
+	listJobsFunc       func(ctx context.Context, filters core.JobListFilters, limit, offset int) ([]*core.Job, int, error)
+	listWorkersFunc    func(ctx context.Context, limit, offset int) ([]*core.WorkerInfo, core.WorkerSummary, error)
 }
 
 func (m *mockBackend) Push(ctx context.Context, job *core.Job) (*core.Job, error) {
@@ -216,6 +218,20 @@ func (m *mockBackend) Health(ctx context.Context) (*core.HealthResponse, error) 
 }
 
 func (m *mockBackend) Close() error { return nil }
+
+func (m *mockBackend) ListJobs(ctx context.Context, filters core.JobListFilters, limit, offset int) ([]*core.Job, int, error) {
+	if m.listJobsFunc != nil {
+		return m.listJobsFunc(ctx, filters, limit, offset)
+	}
+	return []*core.Job{}, 0, nil
+}
+
+func (m *mockBackend) ListWorkers(ctx context.Context, limit, offset int) ([]*core.WorkerInfo, core.WorkerSummary, error) {
+	if m.listWorkersFunc != nil {
+		return m.listWorkersFunc(ctx, limit, offset)
+	}
+	return []*core.WorkerInfo{}, core.WorkerSummary{}, nil
+}
 
 // newTestRouter creates a chi.Mux wired to the mock backend with all routes.
 func newTestRouter(backend *mockBackend) *chi.Mux {

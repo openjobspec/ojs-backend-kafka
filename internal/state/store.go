@@ -97,6 +97,10 @@ type Store interface {
 	// Health
 	Ping(ctx context.Context) error
 
+	// Admin
+	ListJobs(ctx context.Context, filters core.JobListFilters, limit, offset int) ([]*core.Job, int, error)
+	ListWorkers(ctx context.Context, limit, offset int) ([]*core.WorkerInfo, core.WorkerSummary, error)
+
 	// Close
 	Close() error
 }

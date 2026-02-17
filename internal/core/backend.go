@@ -118,6 +118,12 @@ type WorkflowManager interface {
 	AdvanceWorkflow(ctx context.Context, workflowID string, jobID string, result json.RawMessage, failed bool) error
 }
 
+// AdminManager handles admin listing operations.
+type AdminManager interface {
+	ListJobs(ctx context.Context, filters JobListFilters, limit, offset int) ([]*Job, int, error)
+	ListWorkers(ctx context.Context, limit, offset int) ([]*WorkerInfo, WorkerSummary, error)
+}
+
 // Backend defines the full interface for OJS backend implementations,
 // composing all role-specific interfaces.
 type Backend interface {
@@ -127,6 +133,7 @@ type Backend interface {
 	DeadLetterManager
 	CronManager
 	WorkflowManager
+	AdminManager
 
 	// Health returns the health status.
 	Health(ctx context.Context) (*HealthResponse, error)
@@ -276,3 +283,27 @@ type WorkflowCallback struct {
 	Options *EnqueueOptions `json:"options,omitempty"`
 }
 
+// JobListFilters represents supported filters for admin job listing.
+type JobListFilters struct {
+	State    string `json:"state,omitempty"`
+	Queue    string `json:"queue,omitempty"`
+	Type     string `json:"type,omitempty"`
+	WorkerID string `json:"worker_id,omitempty"`
+}
+
+// WorkerInfo represents admin-visible worker state.
+type WorkerInfo struct {
+	ID            string `json:"id"`
+	State         string `json:"state"`
+	Directive     string `json:"directive"`
+	ActiveJobs    int    `json:"active_jobs"`
+	LastHeartbeat string `json:"last_heartbeat,omitempty"`
+}
+
+// WorkerSummary represents aggregate worker counts.
+type WorkerSummary struct {
+	Total   int `json:"total"`
+	Running int `json:"running"`
+	Quiet   int `json:"quiet"`
+	Stale   int `json:"stale"`
+}
