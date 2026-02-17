@@ -8,13 +8,14 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/grpc"
 
+	"github.com/openjobspec/ojs-backend-kafka/internal/core"
 	ojsgrpc "github.com/openjobspec/ojs-backend-kafka/internal/grpc"
 	kafkabackend "github.com/openjobspec/ojs-backend-kafka/internal/kafka"
+	"github.com/openjobspec/ojs-backend-kafka/internal/metrics"
 	"github.com/openjobspec/ojs-backend-kafka/internal/scheduler"
 	"github.com/openjobspec/ojs-backend-kafka/internal/server"
 	"github.com/openjobspec/ojs-backend-kafka/internal/state"
@@ -57,6 +58,9 @@ func main() {
 	}
 	slog.Info("connected to Kafka", "brokers", cfg.KafkaBrokers)
 
+	// Initialize Prometheus server info metric
+	metrics.Init(core.OJSVersion, "kafka")
+
 	// Create producer and backend
 	producer := kafkabackend.NewProducer(kafkaClient, cfg.UseQueueKey, cfg.EventsEnabled)
 	backend := kafkabackend.New(store, producer)
@@ -67,13 +71,13 @@ func main() {
 	defer sched.Stop()
 
 	// Create HTTP server
-	router := server.NewRouter(backend)
+	router := server.NewRouter(backend, cfg)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router,
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  120 * time.Second,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout,
+		IdleTimeout:  cfg.IdleTimeout,
 	}
 
 	// Start server
@@ -110,7 +114,7 @@ func main() {
 	sched.Stop()
 	grpcServer.GracefulStop()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
 	defer cancel()
 
 	if err := srv.Shutdown(ctx); err != nil {
