@@ -10,3 +10,6 @@ bin/
 .env
 .env.local
 ojs-server
+
+# Admin UI build artifacts (rebuild via ojs-admin-ui)
+# internal/admin/dist/

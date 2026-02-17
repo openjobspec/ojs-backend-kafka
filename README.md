@@ -194,6 +194,12 @@ ojs-backend-kafka/
 | Throughput | 50,000+ jobs/second per partition |
 | Connected workers | Up to 10,000 (Kafka scales horizontally) |
 
+## Production Deployment Notes
+
+- **Rate limiting**: This server does not enforce request rate limits. Place a reverse proxy (e.g., Nginx, Envoy, or a cloud load balancer) in front of the server to add rate limiting in production.
+- **Authentication**: Set the `OJS_API_KEY` environment variable to enable Bearer token authentication on all endpoints.
+- **TLS**: Terminate TLS at a reverse proxy or load balancer rather than at the application level.
+
 ## License
 
 Apache-2.0
