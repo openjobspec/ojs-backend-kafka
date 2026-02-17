@@ -1,18 +1,30 @@
 name: Bug Report
-description: Report a bug in ojs-backend-kafka
+description: Report a bug or unexpected behavior
+title: "[Bug]: "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to report a bug! Please fill out the information below.
+        Thank you for taking the time to report a bug.
 
   - type: textarea
     id: description
     attributes:
       label: Description
-      description: A clear description of the bug.
-      placeholder: What happened?
+      description: A clear and concise description of what the bug is.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Set up...
+        2. Run...
+        3. See error...
     validations:
       required: true
 
@@ -20,19 +32,15 @@ body:
     id: expected
     attributes:
       label: Expected Behavior
-      description: What did you expect to happen?
+      description: What you expected to happen.
     validations:
       required: true
 
   - type: textarea
-    id: reproduce
+    id: actual
     attributes:
-      label: Steps to Reproduce
-      description: Minimal steps to reproduce the issue.
-      placeholder: |
-        1. Start server with `make docker-up`
-        2. Send request: `curl -X POST ...`
-        3. Observe error in logs
+      label: Actual Behavior
+      description: What actually happened. Include error messages or logs if applicable.
     validations:
       required: true
 
@@ -40,28 +48,34 @@ body:
     id: version
     attributes:
       label: Version
-      description: OJS server version or commit SHA.
-      placeholder: e.g., v0.1.0 or abc1234
+      description: What version are you using?
+      placeholder: "e.g., v1.0.0"
     validations:
-      required: false
+      required: true
 
   - type: dropdown
-    id: environment
+    id: backend
     attributes:
-      label: Environment
+      label: Backend
+      description: Which OJS backend are you using?
       options:
-        - Docker Compose
-        - Local (Go binary)
-        - Kubernetes
-        - Other
+        - Redis
+        - PostgreSQL
+        - Kafka
+        - NATS
+        - SQS
+        - Other / N/A
     validations:
       required: false
 
   - type: textarea
-    id: logs
+    id: environment
     attributes:
-      label: Relevant Logs
-      description: Paste any relevant log output (JSON structured logs preferred).
-      render: shell
+      label: Environment
+      description: Any relevant environment details (OS, language version, etc.).
+      placeholder: |
+        - OS: macOS 14.0
+        - Go: 1.22.0
+        - Redis: 7.2
     validations:
       required: false

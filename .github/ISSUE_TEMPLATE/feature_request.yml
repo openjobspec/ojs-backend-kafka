@@ -1,18 +1,18 @@
 name: Feature Request
 description: Suggest a new feature or improvement
+title: "[Feature]: "
 labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting an improvement! Please describe your idea below.
+        Thank you for suggesting an improvement to Open Job Spec.
 
   - type: textarea
     id: problem
     attributes:
       label: Problem Statement
-      description: What problem does this feature solve? What use case does it address?
-      placeholder: I'm always frustrated when...
+      description: What problem does this feature solve? Is it related to a frustration?
     validations:
       required: true
 
@@ -20,7 +20,7 @@ body:
     id: solution
     attributes:
       label: Proposed Solution
-      description: Describe the feature or change you'd like to see.
+      description: Describe the solution or feature you would like.
     validations:
       required: true
 
@@ -28,22 +28,14 @@ body:
     id: alternatives
     attributes:
       label: Alternatives Considered
-      description: Any alternative solutions or workarounds you've considered.
+      description: Any alternative solutions or features you have considered.
     validations:
       required: false
 
-  - type: dropdown
-    id: component
+  - type: textarea
+    id: context
     attributes:
-      label: Component
-      description: Which part of the system does this affect?
-      options:
-        - HTTP API
-        - Kafka Backend
-        - Redis State Store
-        - Scheduler
-        - Configuration
-        - Documentation
-        - Other
+      label: Additional Context
+      description: Any other context, screenshots, or examples.
     validations:
       required: false
