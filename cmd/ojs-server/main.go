@@ -12,6 +12,8 @@ import (
 	"github.com/twmb/franz-go/pkg/kgo"
 	"google.golang.org/grpc"
 
+	ojsotel "github.com/openjobspec/ojs-go-backend-common/otel"
+
 	"github.com/openjobspec/ojs-backend-kafka/internal/core"
 	ojsgrpc "github.com/openjobspec/ojs-backend-kafka/internal/grpc"
 	kafkabackend "github.com/openjobspec/ojs-backend-kafka/internal/kafka"
@@ -27,6 +29,27 @@ func main() {
 	})))
 
 	cfg := server.LoadConfig()
+	if cfg.APIKey == "" && !cfg.AllowInsecureNoAuth {
+		slog.Error("refusing to start without API authentication", "hint", "set OJS_API_KEY or OJS_ALLOW_INSECURE_NO_AUTH=true for local development")
+		os.Exit(1)
+	}
+
+	// Initialize OpenTelemetry (opt-in via OJS_OTEL_ENABLED or OTEL_EXPORTER_OTLP_ENDPOINT)
+	otelEndpoint := os.Getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+	if ep := os.Getenv("OJS_OTEL_ENDPOINT"); ep != "" {
+		otelEndpoint = ep
+	}
+	otelShutdown, err := ojsotel.Init(context.Background(), ojsotel.Config{
+		ServiceName:    "ojs-backend-kafka",
+		ServiceVersion: core.OJSVersion,
+		Enabled:        os.Getenv("OJS_OTEL_ENABLED") == "true" || otelEndpoint != "",
+		Endpoint:       otelEndpoint,
+	})
+	if err != nil {
+		slog.Error("failed to initialize OpenTelemetry", "error", err)
+		os.Exit(1)
+	}
+	defer func() { _ = otelShutdown(context.Background()) }()
 
 	// Connect to Redis state store
 	store, err := state.NewRedisStore(cfg.RedisURL)
@@ -70,8 +93,12 @@ func main() {
 	sched.Start()
 	defer sched.Stop()
 
-	// Create HTTP server
-	router := server.NewRouter(backend, cfg)
+	// Initialize real-time Pub/Sub broker
+	broker := kafkabackend.NewPubSubBroker()
+	defer broker.Close()
+
+	// Create HTTP server with real-time support
+	router := server.NewRouterWithRealtime(backend, cfg, broker, broker)
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      router,

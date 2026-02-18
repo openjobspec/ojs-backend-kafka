@@ -14,12 +14,18 @@ import (
 
 // JobHandler handles job-related HTTP endpoints.
 type JobHandler struct {
-	backend core.Backend
+	backend   core.Backend
+	publisher core.EventPublisher
 }
 
 // NewJobHandler creates a new JobHandler.
 func NewJobHandler(backend core.Backend) *JobHandler {
 	return &JobHandler{backend: backend}
+}
+
+// SetEventPublisher sets the event publisher for real-time notifications.
+func (h *JobHandler) SetEventPublisher(pub core.EventPublisher) {
+	h.publisher = pub
 }
 
 // Create handles POST /ojs/v1/jobs
@@ -69,6 +75,14 @@ func (h *JobHandler) Create(w http.ResponseWriter, r *http.Request) {
 	if created.IsExisting {
 		status = http.StatusOK
 	}
+
+	// Publish real-time event
+	if h.publisher != nil {
+		_ = h.publisher.PublishJobEvent(core.NewStateChangedEvent(
+			created.ID, created.Queue, created.Type, "", created.State,
+		))
+	}
+
 	WriteJSON(w, status, map[string]any{"job": created})
 }
 
@@ -109,6 +123,13 @@ func (h *JobHandler) Cancel(w http.ResponseWriter, r *http.Request) {
 		}
 		WriteError(w, http.StatusInternalServerError, core.NewInternalError(err.Error()))
 		return
+	}
+
+	// Publish real-time event
+	if h.publisher != nil {
+		_ = h.publisher.PublishJobEvent(core.NewStateChangedEvent(
+			job.ID, job.Queue, job.Type, "", core.StateCancelled,
+		))
 	}
 
 	WriteJSON(w, http.StatusOK, map[string]any{"job": job})

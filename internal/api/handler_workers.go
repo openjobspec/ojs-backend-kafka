@@ -9,11 +9,17 @@ import (
 )
 
 type WorkerHandler struct {
-	backend core.Backend
+	backend   core.Backend
+	publisher core.EventPublisher
 }
 
 func NewWorkerHandler(backend core.Backend) *WorkerHandler {
 	return &WorkerHandler{backend: backend}
+}
+
+// SetEventPublisher sets the event publisher for real-time notifications.
+func (h *WorkerHandler) SetEventPublisher(pub core.EventPublisher) {
+	h.publisher = pub
 }
 
 func (h *WorkerHandler) Fetch(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +58,15 @@ func (h *WorkerHandler) Fetch(w http.ResponseWriter, r *http.Request) {
 		jobs = []*core.Job{}
 	}
 
+	// Publish real-time events for state transition to active
+	for _, j := range jobs {
+		if h.publisher != nil {
+			_ = h.publisher.PublishJobEvent(core.NewStateChangedEvent(
+				j.ID, j.Queue, j.Type, core.StateAvailable, core.StateActive,
+			))
+		}
+	}
+
 	resp := map[string]any{"jobs": jobs}
 	if len(jobs) > 0 {
 		resp["job"] = jobs[0]
@@ -88,6 +103,13 @@ func (h *WorkerHandler) Ack(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Publish real-time event
+	if h.publisher != nil && resp.Job != nil {
+		_ = h.publisher.PublishJobEvent(core.NewStateChangedEvent(
+			resp.JobID, resp.Job.Queue, resp.Job.Type, core.StateActive, core.StateCompleted,
+		))
+	}
+
 	WriteJSON(w, http.StatusOK, resp)
 }
 
@@ -117,6 +139,13 @@ func (h *WorkerHandler) Nack(w http.ResponseWriter, r *http.Request) {
 		}
 		WriteError(w, http.StatusInternalServerError, core.NewInternalError(err.Error()))
 		return
+	}
+
+	// Publish real-time event
+	if h.publisher != nil && resp.Job != nil {
+		_ = h.publisher.PublishJobEvent(core.NewStateChangedEvent(
+			resp.JobID, resp.Job.Queue, resp.Job.Type, core.StateActive, resp.State,
+		))
 	}
 
 	WriteJSON(w, http.StatusOK, resp)
