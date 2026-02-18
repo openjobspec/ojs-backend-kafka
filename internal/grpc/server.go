@@ -36,7 +36,7 @@ func New(backend core.Backend) *Server {
 
 func (s *Server) Manifest(ctx context.Context, req *ojsv1.ManifestRequest) (*ojsv1.ManifestResponse, error) {
 	return &ojsv1.ManifestResponse{
-		OjsVersion:       "1.0.0-rc.1",
+		OjsVersion:       "1.0",
 		ConformanceLevel: 4,
 		Protocols:        []string{"http", "grpc"},
 		Backend:          "kafka",

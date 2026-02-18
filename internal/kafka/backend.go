@@ -13,6 +13,8 @@ import (
 
 	"github.com/robfig/cron/v3"
 
+	ojsotel "github.com/openjobspec/ojs-go-backend-common/otel"
+
 	"github.com/openjobspec/ojs-backend-kafka/internal/core"
 	"github.com/openjobspec/ojs-backend-kafka/internal/state"
 )
@@ -49,6 +51,9 @@ func (b *KafkaBackend) Close() error {
 
 // Push enqueues a single job.
 func (b *KafkaBackend) Push(ctx context.Context, job *core.Job) (*core.Job, error) {
+	ctx, span := ojsotel.StartJobSpan(ctx, "push", job.ID, job.Type, job.Queue)
+	defer span.End()
+
 	now := time.Now()
 
 	if job.ID == "" {
@@ -154,6 +159,9 @@ func (b *KafkaBackend) Push(ctx context.Context, job *core.Job) (*core.Job, erro
 
 // Fetch claims jobs from the specified queues.
 func (b *KafkaBackend) Fetch(ctx context.Context, queues []string, count int, workerID string, visibilityTimeoutMs int) ([]*core.Job, error) {
+	ctx, span := ojsotel.StartStorageSpan(ctx, "fetch", "kafka")
+	defer span.End()
+
 	now := time.Now()
 	var jobs []*core.Job
 
@@ -234,6 +242,9 @@ func (b *KafkaBackend) Fetch(ctx context.Context, queues []string, count int, wo
 
 // Ack acknowledges a job as completed.
 func (b *KafkaBackend) Ack(ctx context.Context, jobID string, result []byte) (*core.AckResponse, error) {
+	ctx, span := ojsotel.StartJobSpan(ctx, "ack", jobID, "", "")
+	defer span.End()
+
 	job, err := b.store.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, core.NewNotFoundError("Job", jobID)
@@ -280,6 +291,9 @@ func (b *KafkaBackend) Ack(ctx context.Context, jobID string, result []byte) (*c
 
 // Nack reports a job failure.
 func (b *KafkaBackend) Nack(ctx context.Context, jobID string, jobErr *core.JobError, requeue bool) (*core.NackResponse, error) {
+	ctx, span := ojsotel.StartJobSpan(ctx, "nack", jobID, "", "")
+	defer span.End()
+
 	job, err := b.store.GetJob(ctx, jobID)
 	if err != nil {
 		return nil, core.NewNotFoundError("Job", jobID)
