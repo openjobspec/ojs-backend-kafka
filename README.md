@@ -194,10 +194,24 @@ ojs-backend-kafka/
 | Throughput | 50,000+ jobs/second per partition |
 | Connected workers | Up to 10,000 (Kafka scales horizontally) |
 
+## Observability
+
+### OpenTelemetry
+
+The server supports distributed tracing via OpenTelemetry. Set the following environment variable to enable:
+
+```bash
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
+```
+
+Traces are exported in OTLP format over gRPC. Compatible with Jaeger, Zipkin, Grafana Tempo, and any OTLP-compatible collector.
+
+You can also use the legacy env vars `OJS_OTEL_ENABLED=true` and `OJS_OTEL_ENDPOINT` for explicit control.
+
 ## Production Deployment Notes
 
 - **Rate limiting**: This server does not enforce request rate limits. Place a reverse proxy (e.g., Nginx, Envoy, or a cloud load balancer) in front of the server to add rate limiting in production.
-- **Authentication**: Set the `OJS_API_KEY` environment variable to enable Bearer token authentication on all endpoints.
+- **Authentication**: Set `OJS_API_KEY` to require Bearer token auth on all endpoints. For local-only testing, set `OJS_ALLOW_INSECURE_NO_AUTH=true`.
 - **TLS**: Terminate TLS at a reverse proxy or load balancer rather than at the application level.
 
 ## License
