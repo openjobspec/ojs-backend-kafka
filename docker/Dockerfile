@@ -13,4 +13,8 @@ RUN apk --no-cache add ca-certificates && \
 COPY --from=builder /ojs-server /ojs-server
 USER ojs
 EXPOSE 8080
+
+# Optional: OpenTelemetry OTLP exporter endpoint (e.g., http://localhost:4317)
+ENV OTEL_EXPORTER_OTLP_ENDPOINT=""
+
 ENTRYPOINT ["/ojs-server"]

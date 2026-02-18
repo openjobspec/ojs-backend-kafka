@@ -61,7 +61,7 @@ jobs:
       - name: Start server
         working-directory: openjobspec/ojs-backend-kafka
         run: |
-          KAFKA_BROKERS=localhost:9092 REDIS_URL=redis://localhost:6379 ./bin/ojs-server &
+          OJS_ALLOW_INSECURE_NO_AUTH=true KAFKA_BROKERS=localhost:9092 REDIS_URL=redis://localhost:6379 ./bin/ojs-server &
           sleep 3
           curl -sf http://localhost:8080/ojs/v1/health
 

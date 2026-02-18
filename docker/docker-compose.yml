@@ -12,6 +12,7 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - REDIS_URL=redis://redis:6379
       - OJS_KAFKA_EVENTS_ENABLED=true
+      - OJS_ALLOW_INSECURE_NO_AUTH=true
     depends_on:
       kafka:
         condition: service_healthy
@@ -62,6 +63,7 @@ services:
       - KAFKA_BROKERS=kafka:9092
       - REDIS_URL=redis://redis:6379
       - OJS_KAFKA_EVENTS_ENABLED=true
+      - OJS_ALLOW_INSECURE_NO_AUTH=true
     volumes:
       - ..:/app
     depends_on:
