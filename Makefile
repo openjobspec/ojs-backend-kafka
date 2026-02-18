@@ -10,7 +10,7 @@ build:
 	go build -o bin/ojs-server ./cmd/ojs-server
 
 run: build
-	KAFKA_BROKERS=$(KAFKA_BROKERS) REDIS_URL=$(REDIS_URL) ./bin/ojs-server
+	OJS_ALLOW_INSECURE_NO_AUTH=true KAFKA_BROKERS=$(KAFKA_BROKERS) REDIS_URL=$(REDIS_URL) ./bin/ojs-server
 
 test:
 	go test ./... -race -cover

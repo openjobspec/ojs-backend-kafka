@@ -1,0 +1,6 @@
+# CODEOWNERS — https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# Generated from the openjobspec monorepo CODEOWNERS.
+# To update, run: python3 tools/generate-codeowners.py --write
+
+* @openjobspec/backend-maintainers

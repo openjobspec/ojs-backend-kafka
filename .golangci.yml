@@ -6,10 +6,16 @@ linters:
     - unused
     - ineffassign
     - gosimple
+    - gocyclo
+    - unparam
+    - bodyclose
+    - noctx
 
 linters-settings:
   errcheck:
     check-blank: false
+  gocyclo:
+    min-complexity: 15
 
 issues:
   exclude-dirs:
