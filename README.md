@@ -217,4 +217,3 @@ You can also use the legacy env vars `OJS_OTEL_ENABLED=true` and `OJS_OTEL_ENDPO
 ## License
 
 Apache-2.0
-
