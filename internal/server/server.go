@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	"github.com/openjobspec/ojs-go-backend-common/events"
 	ojsotel "github.com/openjobspec/ojs-go-backend-common/otel"
 
 	"github.com/openjobspec/ojs-backend-kafka/internal/admin"
@@ -58,6 +59,17 @@ func NewRouterWithRealtime(backend core.Backend, cfg Config, publisher core.Even
 	if publisher != nil {
 		jobHandler.SetEventPublisher(publisher)
 		workerHandler.SetEventPublisher(publisher)
+	}
+
+	// Auto-create event bus for real-time support when no native pub/sub
+	if subscriber == nil {
+		bus := events.NewBus(events.BusConfig{BufferSize: 256})
+		if publisher == nil {
+			publisher = bus
+			jobHandler.SetEventPublisher(bus)
+			workerHandler.SetEventPublisher(bus)
+		}
+		subscriber = bus
 	}
 
 	// System endpoints
@@ -122,12 +134,16 @@ func NewRouterWithRealtime(backend core.Backend, cfg Config, publisher core.Even
 	r.Handle("/ojs/admin", http.RedirectHandler("/ojs/admin/", http.StatusMovedPermanently))
 	r.Mount("/ojs/admin/", http.StripPrefix("/ojs/admin/", admin.Handler()))
 
-	// Real-time SSE endpoints
-	if subscriber != nil {
-		sseHandler := api.NewSSEHandler(backend, subscriber)
-		r.Get("/ojs/v1/jobs/{id}/events", sseHandler.JobEvents)
-		r.Get("/ojs/v1/queues/{name}/events", sseHandler.QueueEvents)
-	}
+	// Real-time SSE endpoints (always available via event bus)
+	sseHandler := api.NewSSEHandler(backend, subscriber)
+	r.Get("/ojs/v1/jobs/{id}/events", sseHandler.JobEvents)
+	r.Get("/ojs/v1/queues/{name}/events", sseHandler.QueueEvents)
+
+	// WebSocket bridge endpoints (SSE-based WS alternative)
+	wsHandler := api.NewWSBridgeHandler(subscriber)
+	r.Get("/ojs/v1/ws/connect", wsHandler.Connect)
+	r.Post("/ojs/v1/ws/subscribe", wsHandler.Subscribe)
+	r.Post("/ojs/v1/ws/unsubscribe", wsHandler.Unsubscribe)
 
 	return r
 }
