@@ -1096,11 +1096,13 @@ func (b *KafkaBackend) fireCallback(ctx context.Context, cb *core.WorkflowCallba
 	if cb.Options != nil && cb.Options.Queue != "" {
 		queue = cb.Options.Queue
 	}
-	b.Push(ctx, &core.Job{
+	if _, err := b.Push(ctx, &core.Job{
 		Type:  cb.Type,
 		Args:  cb.Args,
 		Queue: queue,
-	})
+	}); err != nil {
+		slog.Error("workflow: error firing callback", "type", cb.Type, "error", err)
+	}
 }
 
 // PushBatch atomically enqueues multiple jobs.
