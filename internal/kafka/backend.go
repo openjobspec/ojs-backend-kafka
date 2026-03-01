@@ -34,6 +34,7 @@ type KafkaBackend struct {
 	store     state.Store
 	producer  *Producer
 	startTime time.Time
+	cpStore   *checkpointStore
 }
 
 // New creates a new KafkaBackend.
@@ -42,6 +43,7 @@ func New(store state.Store, producer *Producer) *KafkaBackend {
 		store:     store,
 		producer:  producer,
 		startTime: time.Now(),
+		cpStore:   newCheckpointStore(),
 	}
 }
 
