@@ -1,0 +1,2158 @@
+openapi: 3.1.0
+info:
+  title: Open Job Spec HTTP API
+  version: 1.0.0-rc.1
+  description: |
+    The Open Job Spec (OJS) HTTP/REST API for universal background job processing.
+
+    OJS defines a vendor-neutral envelope format, an 8-state job lifecycle, and a
+    standard set of operations for enqueuing, processing, and managing background jobs.
+
+    ## Job Lifecycle State Machine
+
+    Jobs progress through the following states:
+
+    ```
+    scheduled → available → active → completed
+                    ↑          ↓
+                pending    retryable
+                              ↓
+                          discarded
+    ```
+
+    All non-terminal states may transition to `cancelled`.
+
+    | State       | Description                                              |
+    |-------------|----------------------------------------------------------|
+    | scheduled   | Waiting for scheduled_at time to arrive                  |
+    | available   | Ready to be fetched by a worker                          |
+    | pending     | Transitional state during internal routing                |
+    | active      | Currently being processed by a worker                    |
+    | completed   | Successfully processed (terminal)                        |
+    | retryable   | Failed but eligible for retry                            |
+    | cancelled   | Cancelled by client or system (terminal)                 |
+    | discarded   | Failed and exhausted all retry attempts (terminal)       |
+
+    ## Content Type
+
+    All requests and responses use `application/openjobspec+json`.
+    Servers also accept `application/json` as an alias.
+  license:
+    name: Apache 2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0
+  contact:
+    name: OpenJobSpec
+    url: https://openjobspec.org
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: System
+    description: Health checks and server capability discovery
+  - name: Jobs
+    description: Job lifecycle operations — enqueue, get, cancel, batch
+  - name: Workers
+    description: Worker-side operations — fetch, ack, nack, heartbeat
+  - name: Queues
+    description: Queue listing, statistics, pause, and resume
+  - name: Dead Letter
+    description: Dead letter queue management — list, retry, delete
+  - name: Cron
+    description: Cron job registration and management
+  - name: Workflows
+    description: Workflow orchestration — chain, group, batch primitives
+
+paths:
+  # ── System ──────────────────────────────────────────────────────────
+  /ojs/manifest:
+    get:
+      operationId: getManifest
+      summary: Get conformance manifest
+      description: |
+        Returns the server's conformance manifest including supported spec version,
+        implementation details, conformance level, and enabled capabilities.
+        This endpoint is unversioned so clients can discover supported versions.
+      tags: [System]
+      responses:
+        "200":
+          description: Conformance manifest
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/Manifest"
+
+  /ojs/v1/health:
+    get:
+      operationId: getHealth
+      summary: Health check
+      description: |
+        Returns the health status of the OJS server and its backend connection.
+        Returns 200 when healthy, 503 when degraded or unavailable.
+      tags: [System]
+      responses:
+        "200":
+          description: Server is healthy
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          description: Server is unhealthy or backend is unavailable
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+
+  # ── Jobs ────────────────────────────────────────────────────────────
+  /ojs/v1/jobs:
+    post:
+      operationId: createJob
+      summary: Enqueue a job
+      description: |
+        Submits a single job for processing (PUSH operation).
+
+        The server assigns a UUIDv7 `id` if the client does not provide one.
+        The initial state is `available`, or `scheduled` if `scheduled_at` is in the future.
+      tags: [Jobs]
+      requestBody:
+        required: true
+        content:
+          application/openjobspec+json:
+            schema:
+              $ref: "#/components/schemas/EnqueueRequest"
+      responses:
+        "201":
+          description: Job created
+          headers:
+            Location:
+              schema:
+                type: string
+              description: URI of the created job (e.g. `/ojs/v1/jobs/{id}`)
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "200":
+          description: Existing job returned (unique job conflict with `use_existing` policy)
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/jobs/{id}:
+    get:
+      operationId: getJob
+      summary: Get job details
+      description: |
+        Retrieves the current state and metadata of a job (INFO operation).
+        Returns the complete job object including state, timestamps, and result/error data.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job details
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: cancelJob
+      summary: Cancel a job
+      description: |
+        Cancels a job (CANCEL operation).
+
+        Transitions the job to `cancelled` if it is in a non-terminal state
+        (`available`, `scheduled`, `pending`, `active`, `retryable`).
+        Returns 409 if the job is already in a terminal state.
+      tags: [Jobs]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job cancelled
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/jobs/batch:
+    post:
+      operationId: createJobBatch
+      summary: Batch enqueue jobs
+      description: |
+        Submits multiple jobs atomically (batch PUSH operation).
+
+        Either all jobs are enqueued or none are. If any job in the batch fails
+        validation, the entire batch is rejected.
+      tags: [Jobs]
+      requestBody:
+        required: true
+        content:
+          application/openjobspec+json:
+            schema:
+              $ref: "#/components/schemas/BatchEnqueueRequest"
+      responses:
+        "201":
+          description: All jobs created
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/BatchEnqueueResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Workers ─────────────────────────────────────────────────────────
+  /ojs/v1/workers/fetch:
+    post:
+      operationId: fetchJobs
+      summary: Fetch jobs for processing
+      description: |
+        Claims one or more jobs for processing (FETCH operation).
+
+        Atomically transitions fetched jobs from `available` to `active`.
+        The response may contain fewer jobs than requested if fewer are available.
+        An empty `jobs` array indicates no work is available.
+      tags: [Workers]
+      requestBody:
+        required: true
+        content:
+          application/openjobspec+json:
+            schema:
+              $ref: "#/components/schemas/FetchRequest"
+      responses:
+        "200":
+          description: Jobs fetched (may be empty)
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/FetchResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/workers/ack:
+    post:
+      operationId: ackJob
+      summary: Acknowledge job completion
+      description: |
+        Marks a job as successfully completed (ACK operation).
+
+        Transitions the job from `active` to `completed`.
+        Returns 409 if the job is not in the `active` state.
+      tags: [Workers]
+      requestBody:
+        required: true
+        content:
+          application/openjobspec+json:
+            schema:
+              $ref: "#/components/schemas/AckRequest"
+      responses:
+        "200":
+          description: Job acknowledged
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/AckResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/workers/nack:
+    post:
+      operationId: nackJob
+      summary: Report job failure
+      description: |
+        Reports that a job handler failed (FAIL operation).
+
+        Transitions the job to `retryable` if attempts remain, or `discarded`
+        if max attempts are exhausted. The response indicates the resulting state
+        and, if retryable, the scheduled time for the next attempt.
+      tags: [Workers]
+      requestBody:
+        required: true
+        content:
+          application/openjobspec+json:
+            schema:
+              $ref: "#/components/schemas/NackRequest"
+      responses:
+        "200":
+          description: Failure recorded
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/NackResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/workers/heartbeat:
+    post:
+      operationId: workerHeartbeat
+      summary: Worker heartbeat
+      description: |
+        Extends the visibility timeout of active jobs and reports worker liveness
+        (BEAT operation).
+
+        The server may include a `directive` in the response (`quiet` or `terminate`)
+        to signal the worker to change its lifecycle state.
+      tags: [Workers]
+      requestBody:
+        required: true
+        content:
+          application/openjobspec+json:
+            schema:
+              $ref: "#/components/schemas/HeartbeatRequest"
+      responses:
+        "200":
+          description: Heartbeat acknowledged
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/HeartbeatResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Queues ──────────────────────────────────────────────────────────
+  /ojs/v1/queues:
+    get:
+      operationId: listQueues
+      summary: List queues
+      description: Returns all known queues with their status.
+      tags: [Queues]
+      responses:
+        "200":
+          description: Queue list
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/QueueListResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/queues/{name}/stats:
+    get:
+      operationId: getQueueStats
+      summary: Get queue statistics
+      description: Returns detailed statistics for a specific queue including job counts by state.
+      tags: [Queues]
+      parameters:
+        - $ref: "#/components/parameters/QueueName"
+      responses:
+        "200":
+          description: Queue statistics
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/QueueStatsResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/queues/{name}/pause:
+    post:
+      operationId: pauseQueue
+      summary: Pause a queue
+      description: |
+        Pauses a queue, preventing workers from fetching new jobs from it.
+        Jobs already active continue processing.
+      tags: [Queues]
+      parameters:
+        - $ref: "#/components/parameters/QueueName"
+      responses:
+        "200":
+          description: Queue paused
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/QueuePauseResumeResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/queues/{name}/resume:
+    post:
+      operationId: resumeQueue
+      summary: Resume a queue
+      description: Resumes a paused queue, allowing workers to fetch jobs again.
+      tags: [Queues]
+      parameters:
+        - $ref: "#/components/parameters/QueueName"
+      responses:
+        "200":
+          description: Queue resumed
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/QueuePauseResumeResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Dead Letter ─────────────────────────────────────────────────────
+  /ojs/v1/dead-letter:
+    get:
+      operationId: listDeadLetterJobs
+      summary: List dead letter jobs
+      description: Returns jobs in the dead letter queue with pagination support.
+      tags: [Dead Letter]
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            minimum: 1
+            maximum: 1000
+          description: Maximum number of jobs to return
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+            minimum: 0
+          description: Number of jobs to skip
+      responses:
+        "200":
+          description: Dead letter job list
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/DeadLetterListResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/dead-letter/{id}/retry:
+    post:
+      operationId: retryDeadLetterJob
+      summary: Retry a dead letter job
+      description: Re-enqueues a dead letter job for processing, resetting its attempt count.
+      tags: [Dead Letter]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job re-enqueued
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/JobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/dead-letter/{id}:
+    delete:
+      operationId: deleteDeadLetterJob
+      summary: Delete a dead letter job
+      description: Permanently removes a job from the dead letter queue.
+      tags: [Dead Letter]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job deleted
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/DeadLetterDeleteResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Cron ────────────────────────────────────────────────────────────
+  /ojs/v1/cron:
+    get:
+      operationId: listCronJobs
+      summary: List cron jobs
+      description: Returns all registered cron job definitions.
+      tags: [Cron]
+      responses:
+        "200":
+          description: Cron job list
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/CronListResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    post:
+      operationId: registerCronJob
+      summary: Register a cron job
+      description: |
+        Registers a new cron job that will be enqueued on the specified schedule.
+        The `expression` field uses standard cron syntax (5 or 6 fields).
+      tags: [Cron]
+      requestBody:
+        required: true
+        content:
+          application/openjobspec+json:
+            schema:
+              $ref: "#/components/schemas/CronJobRequest"
+      responses:
+        "201":
+          description: Cron job registered
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/CronJobResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/cron/{name}:
+    delete:
+      operationId: deleteCronJob
+      summary: Delete a cron job
+      description: Unregisters a cron job by name. Future scheduled runs are cancelled.
+      tags: [Cron]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Cron job name
+      responses:
+        "200":
+          description: Cron job deleted
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/CronJobResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Workflows ───────────────────────────────────────────────────────
+  /ojs/v1/workflows:
+    post:
+      operationId: createWorkflow
+      summary: Create a workflow
+      description: |
+        Creates and starts a workflow. Supported types:
+
+        - **chain**: Sequential execution — each step runs after the previous completes.
+        - **group**: Parallel fan-out/fan-in — all jobs run concurrently.
+        - **batch**: Parallel execution with callbacks on completion/failure.
+      tags: [Workflows]
+      requestBody:
+        required: true
+        content:
+          application/openjobspec+json:
+            schema:
+              $ref: "#/components/schemas/WorkflowRequest"
+      responses:
+        "201":
+          description: Workflow created
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/WorkflowResponse"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/workflows/{id}:
+    get:
+      operationId: getWorkflow
+      summary: Get workflow status
+      description: Returns the current state and progress of a workflow.
+      tags: [Workflows]
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: Workflow details
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/WorkflowResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+    delete:
+      operationId: cancelWorkflow
+      summary: Cancel a workflow
+      description: Cancels a workflow and all its pending/active jobs.
+      tags: [Workflows]
+      parameters:
+        - $ref: "#/components/parameters/WorkflowId"
+      responses:
+        "200":
+          description: Workflow cancelled
+          content:
+            application/openjobspec+json:
+              schema:
+                $ref: "#/components/schemas/WorkflowResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  # ── Admin API ────────────────────────────────────────────────────────
+  # The Admin API provides operational management endpoints for monitoring
+  # and controlling the OJS server. These endpoints are optional and may
+  # not be available on all backend implementations.
+
+  /ojs/v1/admin/stats:
+    get:
+      operationId: adminStats
+      summary: Get server statistics
+      description: Returns aggregate statistics about jobs, queues, and workers.
+      tags: [Admin]
+      responses:
+        "200":
+          description: Server statistics
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/admin/queues:
+    get:
+      operationId: adminListQueues
+      summary: List all queues with details
+      description: Returns detailed information about all queues including depth, throughput, and worker counts.
+      tags: [Admin]
+      responses:
+        "200":
+          description: Queue list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/admin/queues/{name}:
+    get:
+      operationId: adminGetQueue
+      summary: Get queue details
+      description: Returns detailed information about a specific queue.
+      tags: [Admin]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Queue details
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/admin/queues/{name}/pause:
+    post:
+      operationId: adminPauseQueue
+      summary: Pause a queue
+      description: Pauses job processing for a queue. Workers will stop fetching new jobs.
+      tags: [Admin]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Queue paused
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/admin/queues/{name}/resume:
+    post:
+      operationId: adminResumeQueue
+      summary: Resume a paused queue
+      description: Resumes job processing for a previously paused queue.
+      tags: [Admin]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Queue resumed
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/admin/jobs:
+    get:
+      operationId: adminListJobs
+      summary: List jobs with filtering
+      description: Returns a filtered, paginated list of jobs for administrative inspection.
+      tags: [Admin]
+      parameters:
+        - name: state
+          in: query
+          schema:
+            type: string
+        - name: queue
+          in: query
+          schema:
+            type: string
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 25
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        "200":
+          description: Job list
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          $ref: "#/components/responses/InternalError"
+
+  /ojs/v1/admin/jobs/{id}:
+    get:
+      operationId: adminGetJob
+      summary: Get job details
+      description: Returns full details of a specific job including metadata and history.
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Job"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/admin/jobs/{id}/retry:
+    post:
+      operationId: adminRetryJob
+      summary: Retry a failed job
+      description: Re-enqueues a failed or discarded job for processing.
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job re-enqueued
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /ojs/v1/admin/jobs/{id}/cancel:
+    post:
+      operationId: adminCancelJob
+      summary: Cancel a job
+      description: Cancels a job that is scheduled, available, or active.
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job cancelled
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /ojs/v1/admin/jobs/bulk/retry:
+    post:
+      operationId: adminBulkRetry
+      summary: Bulk retry failed jobs
+      description: Re-enqueues multiple failed jobs matching filter criteria.
+      tags: [Admin]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                state:
+                  type: string
+                queue:
+                  type: string
+                type:
+                  type: string
+      responses:
+        "200":
+          description: Jobs re-enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  retried:
+                    type: integer
+
+  /ojs/v1/admin/workers:
+    get:
+      operationId: adminListWorkers
+      summary: List active workers
+      description: Returns information about all connected workers.
+      tags: [Admin]
+      responses:
+        "200":
+          description: Worker list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+
+  /ojs/v1/admin/workers/{id}/quiet:
+    post:
+      operationId: adminQuietWorker
+      summary: Quiet a worker
+      description: Signals a worker to stop fetching new jobs and finish active ones.
+      tags: [Admin]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Worker quieted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/admin/dead-letter:
+    get:
+      operationId: adminListDeadLetter
+      summary: List dead-letter jobs
+      description: Returns jobs in the dead-letter queue with pagination.
+      tags: [Admin]
+      responses:
+        "200":
+          description: Dead-letter job list
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /ojs/v1/admin/dead-letter/stats:
+    get:
+      operationId: adminDeadLetterStats
+      summary: Get dead-letter statistics
+      description: Returns aggregate statistics about dead-letter jobs.
+      tags: [Admin]
+      responses:
+        "200":
+          description: Dead-letter statistics
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /ojs/v1/admin/dead-letter/{id}/retry:
+    post:
+      operationId: adminRetryDeadLetter
+      summary: Retry a dead-letter job
+      description: Re-enqueues a specific dead-letter job for processing.
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Job re-enqueued
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/admin/dead-letter/{id}:
+    delete:
+      operationId: adminDeleteDeadLetter
+      summary: Delete a dead-letter job
+      description: Permanently removes a job from the dead-letter queue.
+      tags: [Admin]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "204":
+          description: Job deleted
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/admin/dead-letter/retry:
+    post:
+      operationId: adminBulkRetryDeadLetter
+      summary: Bulk retry dead-letter jobs
+      description: Re-enqueues all or filtered dead-letter jobs.
+      tags: [Admin]
+      responses:
+        "200":
+          description: Jobs re-enqueued
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  retried:
+                    type: integer
+
+  # ── Real-Time Events ─────────────────────────────────────────────────
+
+  /ojs/v1/jobs/{id}/events:
+    get:
+      operationId: subscribeJobEvents
+      summary: Subscribe to job events (SSE)
+      description: |
+        Opens a Server-Sent Events stream for real-time updates on a specific job.
+        The stream emits state change events and closes when the job reaches a terminal state.
+      tags: [Events]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/queues/{name}/events:
+    get:
+      operationId: subscribeQueueEvents
+      summary: Subscribe to queue events (SSE)
+      description: |
+        Opens a Server-Sent Events stream for real-time updates on all jobs in a queue.
+        Events include state changes, progress updates, and job completions.
+      tags: [Events]
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: SSE event stream
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  /ojs/v1/ws:
+    get:
+      operationId: websocketConnect
+      summary: WebSocket connection
+      description: |
+        Upgrades to a WebSocket connection for bidirectional real-time communication.
+        Supports subscribe/unsubscribe commands and receives job events.
+        Not available on all backends.
+      tags: [Events]
+      responses:
+        "101":
+          description: WebSocket upgrade
+
+  # ── Debug API (Backend-specific) ─────────────────────────────────────
+
+  /ojs/v1/debug/status:
+    get:
+      operationId: debugStatus
+      summary: Get debug status
+      description: Returns internal server state for debugging. Backend-specific; may not be available on all implementations.
+      tags: [Debug]
+      responses:
+        "200":
+          description: Debug status
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /ojs/v1/debug/jobs/{id}/traces:
+    get:
+      operationId: debugGetTraces
+      summary: Get job execution traces
+      description: Returns execution trace history for a job across all attempts.
+      tags: [Debug]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+      responses:
+        "200":
+          description: Trace data
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/debug/jobs/{id}/traces/{attempt}:
+    get:
+      operationId: debugGetTraceAttempt
+      summary: Get trace for specific attempt
+      description: Returns execution trace for a specific attempt of a job.
+      tags: [Debug]
+      parameters:
+        - $ref: "#/components/parameters/JobId"
+        - name: attempt
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Trace data for attempt
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /ojs/v1/debug/failures:
+    get:
+      operationId: debugListFailures
+      summary: List recent failures
+      description: Returns recent job failures with error details for debugging.
+      tags: [Debug]
+      responses:
+        "200":
+          description: Failure list
+          content:
+            application/json:
+              schema:
+                type: object
+
+components:
+  # ── Parameters ──────────────────────────────────────────────────────
+  parameters:
+    JobId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Job ID (UUIDv7)
+
+    QueueName:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: ^[a-z0-9][a-z0-9\-\.]*$
+        maxLength: 128
+      description: Queue name
+
+    WorkflowId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+      description: Workflow ID (UUIDv7)
+
+  # ── Reusable Responses ─────────────────────────────────────────────
+  responses:
+    BadRequest:
+      description: Invalid request (malformed JSON, missing required fields)
+      content:
+        application/openjobspec+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    NotFound:
+      description: Resource not found
+      content:
+        application/openjobspec+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    Conflict:
+      description: State conflict (e.g. cancelling a completed job, duplicate unique job)
+      content:
+        application/openjobspec+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    ValidationError:
+      description: Request validation failed (semantic errors)
+      content:
+        application/openjobspec+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+    InternalError:
+      description: Internal server error
+      content:
+        application/openjobspec+json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+
+  # ── Schemas ─────────────────────────────────────────────────────────
+  schemas:
+    # ── Job Envelope ──────────────────────────────────────────────────
+    Job:
+      type: object
+      description: |
+        Complete OJS job envelope. Jobs progress through an 8-state lifecycle:
+        `scheduled` → `available` → `active` → `completed` | `retryable` → `discarded` | `cancelled`.
+      required:
+        - id
+        - type
+        - state
+        - queue
+        - args
+        - attempt
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Unique job identifier (UUIDv7, time-ordered)
+          example: "019414d4-8b2e-7c3a-b5d1-f0e2a3b4c5d6"
+        type:
+          type: string
+          pattern: ^[a-z][a-z0-9_\-]*(\.[a-z][a-z0-9_\-]*)*$
+          maxLength: 255
+          description: Job type identifier (dot-separated, lowercase)
+          example: "email.send"
+        state:
+          type: string
+          enum:
+            - scheduled
+            - available
+            - pending
+            - active
+            - completed
+            - retryable
+            - cancelled
+            - discarded
+          description: |
+            Current lifecycle state.
+            - `scheduled`: Waiting for scheduled_at time
+            - `available`: Ready to be fetched
+            - `pending`: Internal routing state
+            - `active`: Being processed by a worker
+            - `completed`: Successfully processed (terminal)
+            - `retryable`: Failed, eligible for retry
+            - `cancelled`: Cancelled (terminal)
+            - `discarded`: Exhausted all retries (terminal)
+        queue:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9\-\.]*$
+          maxLength: 128
+          description: Queue the job is assigned to
+          example: "default"
+        args:
+          description: Job arguments as a JSON array. Must contain only JSON-native types.
+          example: ["user@example.com", {"subject": "Welcome"}]
+        meta:
+          description: Optional metadata object for cross-cutting concerns
+        priority:
+          type: integer
+          minimum: -100
+          maximum: 100
+          description: Job priority (-100 lowest, 100 highest). Higher priority jobs are fetched first.
+        attempt:
+          type: integer
+          minimum: 0
+          description: Current attempt number (0-indexed before first execution)
+        max_attempts:
+          type: integer
+          minimum: 0
+          description: Maximum number of execution attempts before discarding
+        timeout_ms:
+          type: integer
+          minimum: 0
+          description: Job execution timeout in milliseconds
+        worker_id:
+          type: string
+          description: ID of the worker currently processing the job
+        created_at:
+          type: string
+          format: date-time
+          description: Timestamp when the job was created (ISO 8601 UTC)
+        enqueued_at:
+          type: string
+          format: date-time
+          description: Timestamp when the job became available
+        started_at:
+          type: string
+          format: date-time
+          description: Timestamp when the job was fetched by a worker
+        completed_at:
+          type: string
+          format: date-time
+          description: Timestamp when the job reached a terminal state
+        cancelled_at:
+          type: string
+          format: date-time
+          description: Timestamp when the job was cancelled
+        scheduled_at:
+          type: string
+          format: date-time
+          description: Timestamp when the job should become available (for delayed jobs)
+        expires_at:
+          type: string
+          format: date-time
+          description: Timestamp after which the job should be discarded if not yet processed
+        result:
+          description: Result data set by the worker on successful completion
+        error:
+          description: Error data from the most recent failed attempt
+        errors:
+          type: array
+          items: {}
+          description: Array of errors from all failed attempts
+        tags:
+          type: array
+          items:
+            type: string
+          description: Arbitrary tags for filtering and grouping
+        retry:
+          $ref: "#/components/schemas/RetryPolicy"
+        unique:
+          $ref: "#/components/schemas/UniquePolicy"
+        retry_delay_ms:
+          type: integer
+          description: Computed delay in milliseconds before next retry attempt
+        parent_results:
+          type: array
+          items: {}
+          description: Results from parent jobs in a workflow chain
+      additionalProperties: true
+
+    # ── Enqueue Request ───────────────────────────────────────────────
+    EnqueueRequest:
+      type: object
+      description: Request body for enqueuing a single job
+      required:
+        - type
+        - args
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Optional client-provided UUIDv7. Server generates one if omitted.
+        type:
+          type: string
+          pattern: ^[a-z][a-z0-9_\-]*(\.[a-z][a-z0-9_\-]*)*$
+          maxLength: 255
+          description: Job type identifier
+          example: "email.send"
+        args:
+          type: array
+          description: Job arguments. Must be a JSON array of JSON-native types.
+          example: ["user@example.com", {"subject": "Welcome"}]
+        meta:
+          description: Optional metadata object
+        schema:
+          type: string
+          description: Optional schema URI for args validation
+        options:
+          $ref: "#/components/schemas/EnqueueOptions"
+      additionalProperties: true
+
+    EnqueueOptions:
+      type: object
+      description: Optional settings for job enqueue
+      properties:
+        queue:
+          type: string
+          pattern: ^[a-z0-9][a-z0-9\-\.]*$
+          maxLength: 128
+          description: Target queue name (default `"default"`)
+          example: "default"
+        priority:
+          type: integer
+          minimum: -100
+          maximum: 100
+          description: Job priority (-100 to 100)
+        timeout_ms:
+          type: integer
+          minimum: 0
+          description: Job execution timeout in milliseconds
+        scheduled_at:
+          type: string
+          format: date-time
+          description: |
+            Schedule the job for future execution (ISO 8601 UTC).
+            Supports relative durations prefixed with `+` (e.g. `+PT5S` for 5 seconds from now).
+        delay_until:
+          type: string
+          format: date-time
+          description: Alias for `scheduled_at`
+        expires_at:
+          type: string
+          format: date-time
+          description: Discard the job if not processed by this time
+        retry:
+          $ref: "#/components/schemas/RetryPolicy"
+        retry_policy:
+          $ref: "#/components/schemas/RetryPolicy"
+        unique:
+          $ref: "#/components/schemas/UniquePolicy"
+        tags:
+          type: array
+          items:
+            type: string
+          description: Arbitrary tags for the job
+        visibility_timeout_ms:
+          type: integer
+          minimum: 0
+          description: Visibility timeout in milliseconds for this job
+        visibility_timeout:
+          type: string
+          description: Visibility timeout as ISO 8601 duration (e.g. `PT30S`)
+        metadata:
+          description: Alternative field for metadata (merged into `meta`)
+        rate_limit:
+          $ref: "#/components/schemas/RateLimitPolicy"
+
+    # ── Batch Enqueue ─────────────────────────────────────────────────
+    BatchEnqueueRequest:
+      type: object
+      description: Request body for batch enqueue. All jobs are processed atomically.
+      required:
+        - jobs
+      properties:
+        jobs:
+          type: array
+          minItems: 1
+          items:
+            $ref: "#/components/schemas/EnqueueRequest"
+          description: Array of job enqueue requests
+
+    BatchEnqueueResponse:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+          description: Array of created jobs
+        count:
+          type: integer
+          description: Number of jobs created
+
+    # ── Fetch Request/Response ────────────────────────────────────────
+    FetchRequest:
+      type: object
+      description: Request body for fetching jobs from queues
+      required:
+        - queues
+      properties:
+        queues:
+          type: array
+          items:
+            type: string
+          minItems: 1
+          description: Queue names to fetch from (checked in order)
+          example: ["default", "low-priority"]
+        count:
+          type: integer
+          minimum: 1
+          default: 1
+          description: Maximum number of jobs to fetch
+        worker_id:
+          type: string
+          description: Identifier of the requesting worker
+        visibility_timeout_ms:
+          type: integer
+          minimum: 0
+          description: Override visibility timeout in milliseconds
+
+    FetchResponse:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+          description: Fetched jobs (empty array if none available)
+        job:
+          $ref: "#/components/schemas/Job"
+          description: First fetched job (convenience field, present only when jobs is non-empty)
+
+    # ── Ack Request/Response ──────────────────────────────────────────
+    AckRequest:
+      type: object
+      description: Request body for acknowledging successful job completion
+      required:
+        - job_id
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: ID of the job to acknowledge
+        result:
+          description: Optional result data from the job handler
+
+    AckResponse:
+      type: object
+      properties:
+        acknowledged:
+          type: boolean
+          description: Whether the acknowledgment was accepted
+        job_id:
+          type: string
+          format: uuid
+          description: ID of the acknowledged job
+        state:
+          type: string
+          enum: [completed]
+          description: Resulting job state
+        completed_at:
+          type: string
+          format: date-time
+          description: Timestamp of completion
+        job:
+          $ref: "#/components/schemas/Job"
+          description: Full job object (optional)
+
+    # ── Nack Request/Response ─────────────────────────────────────────
+    NackRequest:
+      type: object
+      description: Request body for reporting job failure
+      required:
+        - job_id
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: ID of the failed job
+        error:
+          $ref: "#/components/schemas/JobError"
+        requeue:
+          type: boolean
+          default: false
+          description: If true, immediately requeue the job without counting as a retry attempt
+
+    JobError:
+      type: object
+      description: Structured error from a job handler
+      required:
+        - message
+      properties:
+        code:
+          type: string
+          description: Machine-readable error code
+        type:
+          type: string
+          description: Error type/category
+        message:
+          type: string
+          description: Human-readable error message
+        retryable:
+          type: boolean
+          description: Whether this error is retryable
+        details:
+          type: object
+          additionalProperties: true
+          description: Additional error context
+
+    NackResponse:
+      type: object
+      properties:
+        job_id:
+          type: string
+          format: uuid
+          description: ID of the failed job
+        state:
+          type: string
+          enum: [retryable, discarded]
+          description: Resulting job state after failure
+        attempt:
+          type: integer
+          description: Current attempt number
+        max_attempts:
+          type: integer
+          description: Maximum attempts configured
+        next_attempt_at:
+          type: string
+          format: date-time
+          description: When the next retry will be attempted (if retryable)
+        discarded_at:
+          type: string
+          format: date-time
+          description: When the job was discarded (if max attempts exhausted)
+        job:
+          $ref: "#/components/schemas/Job"
+          description: Full job object (optional)
+
+    # ── Heartbeat Request/Response ────────────────────────────────────
+    HeartbeatRequest:
+      type: object
+      description: Request body for worker heartbeat
+      required:
+        - worker_id
+      properties:
+        worker_id:
+          type: string
+          description: Worker identifier
+        job_id:
+          type: string
+          format: uuid
+          description: Single active job ID (alternative to `active_jobs`)
+        active_jobs:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: List of job IDs the worker is actively processing
+        visibility_timeout_ms:
+          type: integer
+          minimum: 0
+          description: Visibility timeout extension in milliseconds
+
+    HeartbeatResponse:
+      type: object
+      properties:
+        state:
+          type: string
+          description: Current worker lifecycle state
+        directive:
+          type: string
+          enum: ["", "quiet", "terminate"]
+          description: |
+            Server directive for the worker:
+            - empty string: continue normal operation
+            - `quiet`: stop fetching new jobs, finish active ones
+            - `terminate`: shut down gracefully
+        jobs_extended:
+          type: array
+          items:
+            type: string
+          description: Job IDs whose visibility timeout was extended
+        server_time:
+          type: string
+          format: date-time
+          description: Server timestamp for clock synchronization
+
+    # ── Queue Schemas ─────────────────────────────────────────────────
+    QueueInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Queue name
+        status:
+          type: string
+          enum: [active, paused]
+          description: Queue status
+        created_at:
+          type: string
+          format: date-time
+          description: When the queue was first seen
+
+    QueueListResponse:
+      type: object
+      properties:
+        queues:
+          type: array
+          items:
+            $ref: "#/components/schemas/QueueInfo"
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    QueueStatsResponse:
+      type: object
+      properties:
+        queue:
+          type: object
+          properties:
+            name:
+              type: string
+              description: Queue name
+            available:
+              type: integer
+              description: Jobs ready to be fetched
+            active:
+              type: integer
+              description: Jobs currently being processed
+            completed:
+              type: integer
+              description: Jobs that completed successfully
+            paused:
+              type: boolean
+              description: Whether the queue is paused
+
+    QueuePauseResumeResponse:
+      type: object
+      properties:
+        queue:
+          type: object
+          properties:
+            name:
+              type: string
+              description: Queue name
+            paused:
+              type: boolean
+              description: Current pause state
+
+    # ── Dead Letter Schemas ───────────────────────────────────────────
+    DeadLetterListResponse:
+      type: object
+      properties:
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/Job"
+          description: Dead letter jobs
+        pagination:
+          $ref: "#/components/schemas/Pagination"
+
+    DeadLetterDeleteResponse:
+      type: object
+      properties:
+        deleted:
+          type: boolean
+          description: Whether the job was deleted
+        job_id:
+          type: string
+          format: uuid
+          description: ID of the deleted job
+
+    # ── Cron Schemas ──────────────────────────────────────────────────
+    CronJob:
+      type: object
+      description: Registered cron job definition
+      properties:
+        name:
+          type: string
+          description: Unique cron job name
+        expression:
+          type: string
+          description: Cron expression (5 or 6 fields)
+          example: "*/5 * * * *"
+        timezone:
+          type: string
+          description: IANA timezone for evaluation (e.g. `America/New_York`)
+        overlap_policy:
+          type: string
+          enum: [allow, skip, cancel]
+          description: Behavior when a previous run is still active
+        enabled:
+          type: boolean
+          description: Whether the cron job is active
+        job_template:
+          $ref: "#/components/schemas/CronJobTemplate"
+        created_at:
+          type: string
+          format: date-time
+        next_run_at:
+          type: string
+          format: date-time
+          description: Next scheduled execution time
+        last_run_at:
+          type: string
+          format: date-time
+          description: Last execution time
+
+    CronJobTemplate:
+      type: object
+      description: Job template used when the cron schedule fires
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          description: Job type to enqueue
+        args:
+          description: Job arguments
+        options:
+          $ref: "#/components/schemas/EnqueueOptions"
+
+    CronJobRequest:
+      type: object
+      description: Request body for registering a cron job
+      required:
+        - name
+        - expression
+        - job_template
+      properties:
+        name:
+          type: string
+          description: Unique name for the cron job
+        expression:
+          type: string
+          description: Cron expression
+          example: "0 */6 * * *"
+        timezone:
+          type: string
+          description: IANA timezone
+        overlap_policy:
+          type: string
+          enum: [allow, skip, cancel]
+        job_template:
+          $ref: "#/components/schemas/CronJobTemplate"
+
+    CronJobResponse:
+      type: object
+      properties:
+        cron:
+          $ref: "#/components/schemas/CronJob"
+
+    CronListResponse:
+      type: object
+      properties:
+        crons:
+          type: array
+          items:
+            $ref: "#/components/schemas/CronJob"
+
+    # ── Workflow Schemas ──────────────────────────────────────────────
+    WorkflowRequest:
+      type: object
+      description: |
+        Request body for creating a workflow.
+        - `chain`: Provide `steps` — jobs run sequentially.
+        - `group` / `batch`: Provide `jobs` — jobs run in parallel.
+      required:
+        - type
+      properties:
+        type:
+          type: string
+          enum: [chain, group, batch]
+          description: Workflow type
+        name:
+          type: string
+          description: Optional human-readable workflow name
+        steps:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowJobRequest"
+          description: Sequential steps (required for `chain` type)
+        jobs:
+          type: array
+          items:
+            $ref: "#/components/schemas/WorkflowJobRequest"
+          description: Parallel jobs (required for `group` and `batch` types)
+        callbacks:
+          $ref: "#/components/schemas/WorkflowCallbacks"
+
+    WorkflowJobRequest:
+      type: object
+      description: A single job definition within a workflow
+      required:
+        - name
+        - type
+        - args
+      properties:
+        name:
+          type: string
+          description: Step/job name within the workflow
+        type:
+          type: string
+          description: Job type identifier
+        args:
+          description: Job arguments
+        options:
+          $ref: "#/components/schemas/EnqueueOptions"
+
+    Workflow:
+      type: object
+      description: Stored workflow state
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Workflow ID (UUIDv7)
+        name:
+          type: string
+          description: Workflow name
+        type:
+          type: string
+          enum: [chain, group, batch]
+          description: Workflow type
+        state:
+          type: string
+          enum: [active, completed, failed, cancelled]
+          description: Current workflow state
+        steps_total:
+          type: integer
+          description: Total steps (chain workflows)
+        steps_completed:
+          type: integer
+          description: Completed steps (chain workflows)
+        jobs_total:
+          type: integer
+          description: Total jobs (group/batch workflows)
+        jobs_completed:
+          type: integer
+          description: Completed jobs (group/batch workflows)
+        callbacks:
+          $ref: "#/components/schemas/WorkflowCallbacks"
+        created_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+
+    WorkflowCallbacks:
+      type: object
+      description: Callback jobs triggered by workflow events
+      properties:
+        on_success:
+          $ref: "#/components/schemas/WorkflowCallback"
+        on_failure:
+          $ref: "#/components/schemas/WorkflowCallback"
+        on_complete:
+          $ref: "#/components/schemas/WorkflowCallback"
+
+    WorkflowCallback:
+      type: object
+      description: A callback job definition
+      properties:
+        type:
+          type: string
+          description: Job type to enqueue
+        args:
+          description: Job arguments
+        options:
+          $ref: "#/components/schemas/EnqueueOptions"
+
+    WorkflowResponse:
+      type: object
+      properties:
+        workflow:
+          $ref: "#/components/schemas/Workflow"
+
+    # ── Policy Schemas ────────────────────────────────────────────────
+    RetryPolicy:
+      type: object
+      description: Configuration for automatic retry behavior on job failure
+      properties:
+        max_attempts:
+          type: integer
+          minimum: 0
+          default: 3
+          description: Maximum number of execution attempts
+        initial_interval:
+          type: string
+          default: "PT1S"
+          description: Initial delay between retries (ISO 8601 duration, e.g. `PT1S`)
+        backoff_coefficient:
+          type: number
+          format: double
+          minimum: 1.0
+          default: 2.0
+          description: Multiplier applied to delay between successive retries
+        max_interval:
+          type: string
+          default: "PT5M"
+          description: Maximum delay between retries (ISO 8601 duration)
+        jitter:
+          type: boolean
+          default: true
+          description: Add random jitter to retry delays to avoid thundering herd
+        non_retryable_errors:
+          type: array
+          items:
+            type: string
+          description: Error codes that should not trigger a retry
+        on_exhaustion:
+          type: string
+          enum: [discard, dead_letter]
+          description: Action when all retries are exhausted
+        backoff_type:
+          type: string
+          enum: [exponential, linear, constant]
+          description: Backoff algorithm
+        backoff_strategy:
+          type: string
+          enum: [exponential, linear, constant]
+          description: Alias for `backoff_type`
+
+    UniquePolicy:
+      type: object
+      description: Deduplication rules to prevent duplicate jobs
+      properties:
+        keys:
+          type: array
+          items:
+            type: string
+          description: Fields used to compute the uniqueness fingerprint
+        period:
+          type: string
+          description: Time window for uniqueness (ISO 8601 duration)
+        on_conflict:
+          type: string
+          enum: [reject, use_existing, replace]
+          description: Behavior when a duplicate is detected
+        states:
+          type: array
+          items:
+            type: string
+            enum: [scheduled, available, pending, active, retryable, completed]
+          description: States to check for existing duplicates
+
+    RateLimitPolicy:
+      type: object
+      description: Rate limiting configuration for a queue
+      properties:
+        max_per_second:
+          type: integer
+          minimum: 1
+          description: Maximum jobs processed per second
+
+    # ── Common Schemas ────────────────────────────────────────────────
+    JobResponse:
+      type: object
+      properties:
+        job:
+          $ref: "#/components/schemas/Job"
+
+    Pagination:
+      type: object
+      description: Pagination metadata
+      properties:
+        total:
+          type: integer
+          description: Total number of items
+        limit:
+          type: integer
+          description: Maximum items per page
+        offset:
+          type: integer
+          description: Number of items skipped
+        has_more:
+          type: boolean
+          description: Whether more items are available
+
+    # ── System Schemas ────────────────────────────────────────────────
+    Manifest:
+      type: object
+      description: Server conformance manifest
+      properties:
+        specversion:
+          type: string
+          description: OJS spec version supported
+          example: "1.0"
+        implementation:
+          type: object
+          properties:
+            name:
+              type: string
+              description: Implementation name
+            version:
+              type: string
+              description: Implementation version
+            backend:
+              type: string
+              description: Backend type
+        conformance_level:
+          type: integer
+          minimum: 0
+          maximum: 4
+          description: Conformance level (0–4, each a superset of the previous)
+        protocols:
+          type: array
+          items:
+            type: string
+          description: Supported protocol bindings
+        backend:
+          type: string
+          description: Backend type identifier
+        capabilities:
+          type: object
+          description: Feature capability flags
+          properties:
+            batch_enqueue:
+              type: boolean
+            cron_jobs:
+              type: boolean
+            dead_letter:
+              type: boolean
+            delayed_jobs:
+              type: boolean
+            job_ttl:
+              type: boolean
+            priority_queues:
+              type: boolean
+            rate_limiting:
+              type: boolean
+            schema_validation:
+              type: boolean
+            unique_jobs:
+              type: boolean
+            workflows:
+              type: boolean
+            pause_resume:
+              type: boolean
+        extensions:
+          type: object
+          description: Registered extensions
+          properties:
+            official:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  uri:
+                    type: string
+                  version:
+                    type: string
+
+    HealthResponse:
+      type: object
+      description: Health check response
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [ok, degraded, error]
+          description: Overall server health
+        version:
+          type: string
+          description: OJS spec version
+        uptime_seconds:
+          type: integer
+          description: Server uptime in seconds
+        backend:
+          type: object
+          properties:
+            type:
+              type: string
+              description: Backend type (e.g. `redis`, `postgres`)
+            status:
+              type: string
+              enum: [connected, disconnected, error]
+              description: Backend connection status
+            latency_ms:
+              type: integer
+              description: Backend ping latency in milliseconds
+            error:
+              type: string
+              description: Error message if backend is unhealthy
+
+    # ── Error Schemas ─────────────────────────────────────────────────
+    ErrorResponse:
+      type: object
+      description: Standard OJS error response envelope
+      required:
+        - error
+      properties:
+        error:
+          $ref: "#/components/schemas/OJSError"
+
+    OJSError:
+      type: object
+      description: |
+        Structured error conforming to the OJS error format.
+
+        Error codes:
+        - `invalid_request`: Malformed request (400)
+        - `validation_error`: Semantic validation failure (422)
+        - `not_found`: Resource not found (404)
+        - `conflict`: State conflict or duplicate (409)
+        - `duplicate`: Duplicate unique job (409)
+        - `queue_paused`: Operation rejected because queue is paused (409)
+        - `internal_error`: Server error (500)
+        - `unsupported`: Unsupported feature or version (422)
+      required:
+        - message
+        - retryable
+      properties:
+        code:
+          type: string
+          enum:
+            - invalid_request
+            - validation_error
+            - not_found
+            - conflict
+            - duplicate
+            - internal_error
+            - unsupported
+            - queue_paused
+          description: Machine-readable error code
+        type:
+          type: string
+          description: Error type (typically matches code)
+        message:
+          type: string
+          description: Human-readable error description
+        retryable:
+          type: boolean
+          description: Whether the client should retry the request
+        details:
+          type: object
+          additionalProperties: true
+          description: Additional context (field names, validation details, resource info)
+        request_id:
+          type: string
+          description: Request ID for tracing

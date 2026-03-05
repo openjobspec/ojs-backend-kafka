@@ -7,6 +7,7 @@ import (
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
+	commonapi "github.com/openjobspec/ojs-go-backend-common/api"
 	"github.com/openjobspec/ojs-go-backend-common/events"
 	ojsotel "github.com/openjobspec/ojs-go-backend-common/otel"
 
@@ -134,16 +135,23 @@ func NewRouterWithRealtime(backend core.Backend, cfg Config, publisher core.Even
 	r.Handle("/ojs/admin", http.RedirectHandler("/ojs/admin/", http.StatusMovedPermanently))
 	r.Mount("/ojs/admin/", http.StripPrefix("/ojs/admin/", admin.Handler()))
 
+	// API documentation (Swagger UI)
+	commonapi.RegisterDocsRoutes(r, api.OpenAPISpec)
+
 	// Real-time SSE endpoints (always available via event bus)
 	sseHandler := api.NewSSEHandler(backend, subscriber)
 	r.Get("/ojs/v1/jobs/{id}/events", sseHandler.JobEvents)
 	r.Get("/ojs/v1/queues/{name}/events", sseHandler.QueueEvents)
 
+	// Native WebSocket endpoint
+	nativeWSHandler := api.NewWSHandler(backend, subscriber)
+	r.Get("/ojs/v1/ws", nativeWSHandler.Handle)
+
 	// WebSocket bridge endpoints (SSE-based WS alternative)
-	wsHandler := api.NewWSBridgeHandler(subscriber)
-	r.Get("/ojs/v1/ws/connect", wsHandler.Connect)
-	r.Post("/ojs/v1/ws/subscribe", wsHandler.Subscribe)
-	r.Post("/ojs/v1/ws/unsubscribe", wsHandler.Unsubscribe)
+	wsBridgeHandler := api.NewWSBridgeHandler(subscriber)
+	r.Get("/ojs/v1/ws/connect", wsBridgeHandler.Connect)
+	r.Post("/ojs/v1/ws/subscribe", wsBridgeHandler.Subscribe)
+	r.Post("/ojs/v1/ws/unsubscribe", wsBridgeHandler.Unsubscribe)
 
 	return r
 }
