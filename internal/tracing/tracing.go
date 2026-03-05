@@ -51,3 +51,4 @@ func Setup(serviceName string) (func(), error) {
 
 	return func() { _ = shutdown(context.Background()) }, nil
 }
+
