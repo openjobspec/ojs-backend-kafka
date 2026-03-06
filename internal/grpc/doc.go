@@ -22,7 +22,7 @@
 //	)
 //
 //	grpcServer := grpc.NewServer()
-//	ojsgrpc.Register(grpcServer, backend)
+//	ojsgrpc.Register(grpcServer, backend, ojsgrpc.WithEventSubscriber(broker))
 //	lis, _ := net.Listen("tcp", ":9090")
 //	grpcServer.Serve(lis)
 package grpc

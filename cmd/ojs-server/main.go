@@ -121,7 +121,7 @@ func main() {
 
 	// Start gRPC server
 	grpcServer := grpc.NewServer()
-	ojsgrpc.Register(grpcServer, backend)
+	ojsgrpc.Register(grpcServer, backend, ojsgrpc.WithEventSubscriber(broker))
 	healthSrv := health.NewServer()
 	healthpb.RegisterHealthServer(grpcServer, healthSrv)
 	healthSrv.SetServingStatus("ojs.v1.OJSService", healthpb.HealthCheckResponse_SERVING)

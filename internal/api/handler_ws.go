@@ -210,7 +210,11 @@ func (h *WSHandler) handleSubscribe(ctx context.Context, conn *websocket.Conn, s
 				if !ok {
 					return
 				}
-				data, _ := json.Marshal(event)
+				data, err := json.Marshal(event)
+				if err != nil {
+					slog.Warn("failed to marshal WebSocket event", "error", err)
+					continue
+				}
 				id := h.eventID.Add(1)
 				h.writeJSON(ctx, conn, wsResponse{
 					Type:      "event",

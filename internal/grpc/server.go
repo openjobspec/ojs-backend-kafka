@@ -3,7 +3,6 @@ package grpc
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"time"
 
 	"github.com/openjobspec/ojs-backend-kafka/internal/core"
@@ -19,12 +18,27 @@ import (
 // Server implements the OJSService gRPC service by delegating to a core.Backend.
 type Server struct {
 	ojsv1.UnimplementedOJSServiceServer
-	backend core.Backend
+	backend    core.Backend
+	subscriber core.EventSubscriber
 }
 
 // Register creates a new gRPC OJS server and registers it with the given gRPC server.
-func Register(s *grpc.Server, backend core.Backend) {
-	ojsv1.RegisterOJSServiceServer(s, &Server{backend: backend})
+func Register(s *grpc.Server, backend core.Backend, opts ...ServerOption) {
+	srv := &Server{backend: backend}
+	for _, opt := range opts {
+		opt(srv)
+	}
+	ojsv1.RegisterOJSServiceServer(s, srv)
+}
+
+// ServerOption configures the gRPC server.
+type ServerOption func(*Server)
+
+// WithEventSubscriber sets the event subscriber for streaming RPCs.
+func WithEventSubscriber(sub core.EventSubscriber) ServerOption {
+	return func(s *Server) {
+		s.subscriber = sub
+	}
 }
 
 // New returns a new gRPC OJS server wrapping the given backend.
@@ -401,14 +415,154 @@ func (s *Server) CancelWorkflow(ctx context.Context, req *ojsv1.CancelWorkflowRe
 	}, nil
 }
 
-// --- Streaming RPCs (optional, return UNIMPLEMENTED by default) ---
+// --- Streaming RPCs ---
 
 func (s *Server) StreamJobs(req *ojsv1.StreamJobsRequest, stream ojsv1.OJSService_StreamJobsServer) error {
-	return status.Errorf(codes.Unimplemented, "StreamJobs not yet implemented")
+	if len(req.Queues) == 0 {
+		return status.Errorf(codes.InvalidArgument, "at least one queue is required")
+	}
+	workerID := req.WorkerId
+	if workerID == "" {
+		return status.Errorf(codes.InvalidArgument, "worker_id is required")
+	}
+
+	maxConcurrent := int(req.MaxConcurrent)
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+
+	ctx := stream.Context()
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	active := 0
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if active >= maxConcurrent {
+				continue
+			}
+
+			count := maxConcurrent - active
+			jobs, err := s.backend.Fetch(ctx, req.Queues, count, workerID, core.DefaultVisibilityTimeoutMs)
+			if err != nil {
+				continue
+			}
+
+			for _, j := range jobs {
+				if err := stream.Send(jobToProto(j)); err != nil {
+					return err
+				}
+				active++
+			}
+		}
+	}
 }
 
 func (s *Server) StreamEvents(req *ojsv1.StreamEventsRequest, stream ojsv1.OJSService_StreamEventsServer) error {
-	return status.Errorf(codes.Unimplemented, "StreamEvents not yet implemented")
+	if s.subscriber == nil {
+		return status.Errorf(codes.Unavailable, "event streaming is not configured")
+	}
+
+	ctx := stream.Context()
+
+	var (
+		ch    <-chan *core.JobEvent
+		unsub func()
+		err   error
+	)
+
+	if req.JobId != "" {
+		ch, unsub, err = s.subscriber.SubscribeJob(req.JobId)
+	} else if len(req.Queues) == 1 {
+		ch, unsub, err = s.subscriber.SubscribeQueue(req.Queues[0])
+	} else {
+		ch, unsub, err = s.subscriber.SubscribeAll()
+	}
+	if err != nil {
+		return status.Errorf(codes.Internal, "failed to subscribe: %v", err)
+	}
+	defer unsub()
+
+	queueFilter := make(map[string]bool, len(req.Queues))
+	for _, q := range req.Queues {
+		queueFilter[q] = true
+	}
+	typeFilter := make(map[string]bool, len(req.EventTypes))
+	for _, t := range req.EventTypes {
+		typeFilter[t] = true
+	}
+
+	keepalive := time.NewTicker(30 * time.Second)
+	defer keepalive.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case event, ok := <-ch:
+			if !ok {
+				return nil
+			}
+			if len(queueFilter) > 0 && !queueFilter[event.Queue] {
+				continue
+			}
+			if len(typeFilter) > 0 && !typeFilter[event.EventType] {
+				continue
+			}
+
+			protoEvent := jobEventToProto(event)
+			if err := stream.Send(protoEvent); err != nil {
+				return err
+			}
+		case <-keepalive.C:
+			ka := &ojsv1.Event{
+				Id:        "evt_keepalive",
+				Type:      "stream.keepalive",
+				Timestamp: timestamppb.Now(),
+			}
+			if err := stream.Send(ka); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+func jobEventToProto(e *core.JobEvent) *ojsv1.Event {
+	pe := &ojsv1.Event{
+		Id:      "evt_" + core.NewUUIDv7(),
+		Type:    e.EventType,
+		JobId:   e.JobID,
+		JobType: e.JobType,
+		Queue:   e.Queue,
+	}
+
+	if e.Timestamp != "" {
+		if t, err := time.Parse(time.RFC3339, e.Timestamp); err == nil {
+			pe.Timestamp = timestamppb.New(t)
+		}
+	}
+
+	data := map[string]any{}
+	if e.From != "" {
+		data["from"] = e.From
+	}
+	if e.To != "" {
+		data["to"] = e.To
+	}
+	if e.Progress > 0 {
+		data["progress"] = e.Progress
+	}
+	if e.Message != "" {
+		data["message"] = e.Message
+	}
+	if len(data) > 0 {
+		pe.Data, _ = structpb.NewStruct(data)
+	}
+
+	return pe
 }
 
 // --- Helpers ---
@@ -487,6 +641,3 @@ func parseRFC3339(s string) *timestamppb.Timestamp {
 }
 
 func intPtr(v int) *int { return &v }
-
-// Suppress unused import warning for fmt
-var _ = fmt.Sprintf
