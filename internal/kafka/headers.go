@@ -94,3 +94,4 @@ func EventHeaders(eventType string, jobID string, queue string) []kgo.RecordHead
 		{Key: HeaderQueue, Value: []byte(queue)},
 	}
 }
+
