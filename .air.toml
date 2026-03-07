@@ -18,3 +18,4 @@ tmp_dir = "tmp"
 
 [misc]
   clean_on_exit = true
+
