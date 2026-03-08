@@ -284,7 +284,7 @@ func (b *KafkaBackend) Ack(ctx context.Context, jobID string, result []byte) (*c
 	}
 	return &core.AckResponse{
 		Acknowledged: true,
-		JobID:        jobID,
+		ID:        jobID,
 		State:        core.StateCompleted,
 		CompletedAt:  now,
 		Job:          updatedJob,
@@ -336,7 +336,7 @@ func (b *KafkaBackend) Nack(ctx context.Context, jobID string, jobErr *core.JobE
 			slog.Error("failed to fetch job after nack requeue", "job_id", jobID, "error", getErr)
 		}
 		return &core.NackResponse{
-			JobID:       jobID,
+			ID:       jobID,
 			State:       core.StateAvailable,
 			Attempt:     job.Attempt,
 			MaxAttempts: maxAttempts,
@@ -435,7 +435,7 @@ func (b *KafkaBackend) Nack(ctx context.Context, jobID string, jobErr *core.JobE
 			slog.Error("failed to fetch job after discard", "job_id", jobID, "error", getErr)
 		}
 		return &core.NackResponse{
-			JobID:       jobID,
+			ID:       jobID,
 			State:       core.StateDiscarded,
 			Attempt:     newAttempt,
 			MaxAttempts: maxAttempts,
@@ -464,7 +464,7 @@ func (b *KafkaBackend) Nack(ctx context.Context, jobID string, jobErr *core.JobE
 		slog.Error("failed to fetch job after retry", "job_id", jobID, "error", getErr)
 	}
 	return &core.NackResponse{
-		JobID:         jobID,
+		ID:         jobID,
 		State:         core.StateRetryable,
 		Attempt:       newAttempt,
 		MaxAttempts:   maxAttempts,

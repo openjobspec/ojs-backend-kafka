@@ -88,14 +88,14 @@ func (m *mockBackend) Ack(ctx context.Context, jobID string, result []byte) (*co
 	if m.ackFunc != nil {
 		return m.ackFunc(ctx, jobID, result)
 	}
-	return &core.AckResponse{Acknowledged: true, JobID: jobID, State: "completed"}, nil
+	return &core.AckResponse{Acknowledged: true, ID: jobID, State: "completed"}, nil
 }
 
 func (m *mockBackend) Nack(ctx context.Context, jobID string, jobErr *core.JobError, requeue bool) (*core.NackResponse, error) {
 	if m.nackFunc != nil {
 		return m.nackFunc(ctx, jobID, jobErr, requeue)
 	}
-	return &core.NackResponse{JobID: jobID, State: "retryable"}, nil
+	return &core.NackResponse{ID: jobID, State: "retryable"}, nil
 }
 
 func (m *mockBackend) Heartbeat(ctx context.Context, workerID string, activeJobs []string, vis int) (*core.HeartbeatResponse, error) {
