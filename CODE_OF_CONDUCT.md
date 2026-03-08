@@ -27,3 +27,4 @@ repository maintainership channels on GitHub. For sensitive reports, use a priva
 GitHub Security Advisory submission.
 
 All reports will be reviewed and handled promptly and fairly.
+
