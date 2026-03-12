@@ -86,7 +86,7 @@ ojs.events                    -- lifecycle events
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.24+
 - Docker (for Kafka + Redis)
 
 ### Run with Docker Compose

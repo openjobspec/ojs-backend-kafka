@@ -6,7 +6,7 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.24+
 - Docker (for Kafka + Redis)
 
 ### Local Development Setup
