@@ -9,8 +9,9 @@ import (
 
 // subscription represents a single subscriber channel with its filter.
 type subscription struct {
-	ch     chan *core.JobEvent
-	filter func(*core.JobEvent) bool
+	ch        chan *core.JobEvent
+	filter    func(*core.JobEvent) bool
+	closeOnce sync.Once
 }
 
 // PubSubBroker implements core.EventPublisher and core.EventSubscriber
@@ -78,7 +79,7 @@ func (b *PubSubBroker) subscribe(filter func(*core.JobEvent) bool) (<-chan *core
 		b.mu.Lock()
 		delete(b.subs, sub)
 		b.mu.Unlock()
-		close(ch)
+		sub.closeOnce.Do(func() { close(ch) })
 	}
 
 	return ch, unsubscribe, nil
@@ -90,7 +91,7 @@ func (b *PubSubBroker) Close() error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	for sub := range b.subs {
-		close(sub.ch)
+		sub.closeOnce.Do(func() { close(sub.ch) })
 	}
 	b.subs = make(map[*subscription]struct{})
 	return nil

@@ -207,8 +207,10 @@ func (s *Server) Heartbeat(ctx context.Context, req *ojsv1.HeartbeatRequest) (*o
 		return nil, coreErrorToGRPC(err)
 	}
 
-	_ = hbResp
-	return &ojsv1.HeartbeatResponse{}, nil
+	resp := &ojsv1.HeartbeatResponse{
+		DirectedState: directiveToWorkerState(hbResp.Directive),
+	}
+	return resp, nil
 }
 
 // --- Queue RPCs ---
@@ -641,3 +643,16 @@ func parseRFC3339(s string) *timestamppb.Timestamp {
 }
 
 func intPtr(v int) *int { return &v }
+
+// directiveToWorkerState maps a backend heartbeat directive string to the
+// protobuf WorkerState enum.
+func directiveToWorkerState(directive string) ojsv1.WorkerState {
+	switch directive {
+	case "quiet":
+		return ojsv1.WorkerState_WORKER_STATE_QUIET
+	case "terminate":
+		return ojsv1.WorkerState_WORKER_STATE_TERMINATE
+	default:
+		return ojsv1.WorkerState_WORKER_STATE_RUNNING
+	}
+}

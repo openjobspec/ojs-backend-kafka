@@ -2,6 +2,7 @@ package grpc
 
 import (
 	"encoding/json"
+	"log/slog"
 	"time"
 
 	"github.com/openjobspec/ojs-backend-kafka/internal/core"
@@ -55,14 +56,18 @@ func jobToProto(j *core.Job) *ojsv1.Job {
 	if j.Meta != nil {
 		var meta map[string]any
 		if err := json.Unmarshal(j.Meta, &meta); err == nil {
-			pj.Meta, _ = structpb.NewStruct(meta)
+			if s, err := structpb.NewStruct(meta); err == nil {
+				pj.Meta = s
+			}
 		}
 	}
 
 	if j.Result != nil {
 		var result map[string]any
 		if err := json.Unmarshal(j.Result, &result); err == nil {
-			pj.Result, _ = structpb.NewStruct(result)
+			if s, err := structpb.NewStruct(result); err == nil {
+				pj.Result = s
+			}
 		}
 	}
 
@@ -106,7 +111,11 @@ func enqueueRequestToJob(req *ojsv1.EnqueueRequest) *core.Job {
 
 	if len(req.Args) > 0 {
 		args := valuesToInterface(req.Args)
-		job.Args, _ = json.Marshal(args)
+		if data, err := json.Marshal(args); err != nil {
+			slog.Warn("failed to marshal gRPC args", "error", err)
+		} else {
+			job.Args = data
+		}
 	}
 
 	if opts := req.Options; opts != nil {
@@ -118,7 +127,11 @@ func enqueueRequestToJob(req *ojsv1.EnqueueRequest) *core.Job {
 			job.Priority = &p
 		}
 		if opts.Meta != nil {
-			job.Meta, _ = json.Marshal(opts.Meta.AsMap())
+			if data, err := json.Marshal(opts.Meta.AsMap()); err != nil {
+				slog.Warn("failed to marshal gRPC meta", "error", err)
+			} else {
+				job.Meta = data
+			}
 		}
 		if opts.Retry != nil {
 			job.Retry = protoRetryToCore(opts.Retry)
@@ -142,7 +155,11 @@ func enqueueJobRequestToJob(req *ojsv1.BatchJobEntry) *core.Job {
 
 	if len(req.Args) > 0 {
 		args := valuesToInterface(req.Args)
-		job.Args, _ = json.Marshal(args)
+		if data, err := json.Marshal(args); err != nil {
+			slog.Warn("failed to marshal gRPC args", "error", err)
+		} else {
+			job.Args = data
+		}
 	}
 
 	if opts := req.Options; opts != nil {
@@ -154,7 +171,11 @@ func enqueueJobRequestToJob(req *ojsv1.BatchJobEntry) *core.Job {
 			job.Priority = &p
 		}
 		if opts.Meta != nil {
-			job.Meta, _ = json.Marshal(opts.Meta.AsMap())
+			if data, err := json.Marshal(opts.Meta.AsMap()); err != nil {
+				slog.Warn("failed to marshal gRPC meta", "error", err)
+			} else {
+				job.Meta = data
+			}
 		}
 	}
 
@@ -211,7 +232,11 @@ func protoToWorkflowStep(req *ojsv1.WorkflowStep) core.WorkflowJobRequest {
 
 	if len(req.Args) > 0 {
 		args := valuesToInterface(req.Args)
-		wj.Args, _ = json.Marshal(args)
+		if data, err := json.Marshal(args); err != nil {
+			slog.Warn("failed to marshal gRPC workflow step args", "error", err)
+		} else {
+			wj.Args = data
+		}
 	}
 
 	return wj
