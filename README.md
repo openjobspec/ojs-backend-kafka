@@ -1,4 +1,5 @@
 # ojs-backend-kafka
+[![Stability: stable](https://img.shields.io/badge/stability-stable-brightgreen.svg)](https://github.com/openjobspec/openjobspec/blob/main/STABILITY.md)
 
 [![CI](https://github.com/openjobspec/ojs-backend-kafka/actions/workflows/ci.yml/badge.svg)](https://github.com/openjobspec/ojs-backend-kafka/actions/workflows/ci.yml)
 ![Conformance](https://github.com/openjobspec/ojs-backend-kafka/raw/main/.github/badges/conformance.svg)
