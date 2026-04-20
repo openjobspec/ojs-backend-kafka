@@ -7,6 +7,8 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-04-20
+
 ### Added
 - Initial Kafka-backed OpenJobSpec server with hybrid architecture (Kafka for durability, Redis for state).
 - Snappy compression and leader acknowledgment for Kafka messages.
