@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"strconv"
 	"time"
@@ -122,7 +123,11 @@ func (s *RedisStore) scanAllWorkers(ctx context.Context) ([]*core.WorkerInfo, er
 			w.LastHeartbeat = v
 		}
 		if v, ok := data["active_jobs"]; ok {
-			w.ActiveJobs, _ = strconv.Atoi(v)
+			n, err := strconv.Atoi(v)
+			if err != nil {
+				slog.Warn("admin: invalid active_jobs value", "value", v, "error", err)
+			}
+			w.ActiveJobs = n
 		}
 
 		// Mark workers as stale if no heartbeat for 60 seconds

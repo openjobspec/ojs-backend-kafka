@@ -310,7 +310,10 @@ func (s *Server) DeleteDeadLetter(ctx context.Context, req *ojsv1.DeleteDeadLett
 // --- Cron RPCs ---
 
 func (s *Server) RegisterCron(ctx context.Context, req *ojsv1.RegisterCronRequest) (*ojsv1.RegisterCronResponse, error) {
-	argsJSON, _ := json.Marshal(valuesToInterface(req.Args))
+	argsJSON, err := json.Marshal(valuesToInterface(req.Args))
+if err != nil {
+return nil, status.Errorf(codes.InvalidArgument, "failed to marshal cron args: %v", err)
+}
 
 	cronJob := &core.CronJob{
 		Name:       req.Name,

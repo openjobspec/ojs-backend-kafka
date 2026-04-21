@@ -10,7 +10,7 @@ package admin
 import (
 	"embed"
 	"io/fs"
-	"log"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -24,7 +24,7 @@ var distFS embed.FS
 func Handler() http.Handler {
 	sub, err := fs.Sub(distFS, "dist")
 	if err != nil {
-		log.Fatalf("admin: failed to create sub filesystem: %v", err)
+		panic(fmt.Sprintf("admin: failed to create sub filesystem: %v", err))
 	}
 	fileServer := http.FileServer(http.FS(sub))
 

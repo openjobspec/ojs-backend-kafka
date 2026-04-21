@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 
@@ -151,7 +152,11 @@ func (s *RedisStore) CheckRateLimit(ctx context.Context, queue string) (bool, er
 		return true, nil // no rate limit
 	}
 
-	maxPerSec, _ := strconv.Atoi(rateLimitStr)
+	maxPerSec, parseErr := strconv.Atoi(rateLimitStr)
+	if parseErr != nil {
+		slog.Warn("rate limit: invalid rate limit value", "queue", queue, "value", rateLimitStr, "error", parseErr)
+		return true, nil
+	}
 	if maxPerSec <= 0 {
 		return true, nil
 	}
@@ -159,7 +164,11 @@ func (s *RedisStore) CheckRateLimit(ctx context.Context, queue string) (bool, er
 	windowMs := int64(1000 / maxPerSec)
 	lastFetchStr, _ := s.client.Get(ctx, queueRateLimitLastKey(queue)).Result()
 	if lastFetchStr != "" {
-		lastFetchMs, _ := strconv.ParseInt(lastFetchStr, 10, 64)
+		lastFetchMs, parseErr := strconv.ParseInt(lastFetchStr, 10, 64)
+		if parseErr != nil {
+			slog.Warn("rate limit: invalid last fetch timestamp", "queue", queue, "value", lastFetchStr, "error", parseErr)
+			return true, nil
+		}
 		nowMs := time.Now().UnixMilli()
 		if nowMs-lastFetchMs < windowMs {
 			return false, nil // rate limited
@@ -274,7 +283,9 @@ func (s *RedisStore) SetUniqueJobID(ctx context.Context, fingerprint string, job
 // --- Workers ---
 
 func (s *RedisStore) RegisterWorker(ctx context.Context, workerID string, data map[string]any) error {
-	s.client.SAdd(ctx, workersKey(), workerID)
+	if err := s.client.SAdd(ctx, workersKey(), workerID).Err(); err != nil {
+		slog.Warn("register worker: failed to add to worker set", "worker_id", workerID, "error", err)
+	}
 	return s.client.HSet(ctx, workerKey(workerID), data).Err()
 }
 
