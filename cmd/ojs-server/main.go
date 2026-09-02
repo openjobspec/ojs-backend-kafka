@@ -64,7 +64,7 @@ func main() {
 	kafkaClient, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.KafkaBrokers...),
 		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
-		kgo.RequiredAcks(kgo.LeaderAck()),
+		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.AllowAutoTopicCreation(),
 	)
 	if err != nil {
