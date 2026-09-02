@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -13,7 +14,10 @@ import (
 	"github.com/openjobspec/ojs-backend-kafka/internal/core"
 )
 
-const keyPrefix = "ojs:"
+const (
+	keyPrefix                     = "ojs:"
+	cronOccurrenceMarkerRetention = 24 * time.Hour
+)
 
 // RedisStore implements Store using Redis.
 type RedisStore struct {
@@ -272,12 +276,117 @@ func (s *RedisStore) DeleteVisibility(ctx context.Context, jobID string) error {
 // --- Unique jobs ---
 
 func (s *RedisStore) GetUniqueJobID(ctx context.Context, fingerprint string) (string, error) {
-	return s.client.Get(ctx, uniqueKey(fingerprint)).Result()
+	id, err := s.client.Get(ctx, uniqueKey(fingerprint)).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	return id, err
 }
 
 func (s *RedisStore) SetUniqueJobID(ctx context.Context, fingerprint string, jobID string, ttlMs int64) error {
 	ttl := time.Duration(ttlMs) * time.Millisecond
 	return s.client.Set(ctx, uniqueKey(fingerprint), jobID, ttl).Err()
+}
+
+// ClaimUniqueJob atomically claims a unique fingerprint and creates the job in
+// a single Lua transaction. See claimUniqueJobScript for the conflict policy.
+func (s *RedisStore) ClaimUniqueJob(ctx context.Context, fingerprint string, job *core.Job, score float64, scheduled bool, ttlMs int64, conflict string, relevantStates []string) (*UniqueClaimResult, error) {
+	h := jobToHash(job)
+	args := []any{
+		conflict,
+		strings.Join(relevantStates, ","),
+		ttlMs,
+		score,
+		job.ID,
+		job.Queue,
+	}
+	for k, v := range h {
+		args = append(args, k, v)
+	}
+
+	sortedSetKey := queueAvailableKey(job.Queue)
+	if scheduled {
+		sortedSetKey = scheduledKey()
+	}
+
+	result, err := claimUniqueJobScript.Run(ctx, s.client,
+		[]string{uniqueKey(fingerprint), jobKey(job.ID), sortedSetKey, queuesKey()},
+		args...,
+	).Slice()
+	if err != nil {
+		return nil, err
+	}
+	if len(result) != 2 {
+		return nil, fmt.Errorf("claim unique job: unexpected script result length %d", len(result))
+	}
+	outcome, err := redisScriptString(result[0])
+	if err != nil {
+		return nil, fmt.Errorf("claim unique job outcome: %w", err)
+	}
+	existingID, err := redisScriptString(result[1])
+	if err != nil {
+		return nil, fmt.Errorf("claim unique job existing ID: %w", err)
+	}
+	return &UniqueClaimResult{Outcome: outcome, ExistingID: existingID}, nil
+}
+
+// ReplaceUniqueJob compare-and-cancels the expected predecessor and creates the
+// replacement in one script. A changed claim or unsafe predecessor is returned
+// as a rejected result without mutating either job.
+func (s *RedisStore) ReplaceUniqueJob(ctx context.Context, fingerprint string, expectedID string, job *core.Job, score float64, scheduled bool, ttlMs int64, relevantStates []string, cancelledAt string) (*UniqueClaimResult, error) {
+	h := jobToHash(job)
+	args := []any{
+		expectedID,
+		strings.Join(relevantStates, ","),
+		ttlMs,
+		score,
+		job.ID,
+		job.Queue,
+		cancelledAt,
+	}
+	for k, v := range h {
+		args = append(args, k, v)
+	}
+
+	sortedSetKey := queueAvailableKey(job.Queue)
+	if scheduled {
+		sortedSetKey = scheduledKey()
+	}
+
+	result, err := replaceUniqueJobScript.Run(ctx, s.client,
+		[]string{
+			uniqueKey(fingerprint),
+			jobKey(job.ID),
+			sortedSetKey,
+			queuesKey(),
+			scheduledKey(),
+			retryKey(),
+		},
+		args...,
+	).Slice()
+	if err != nil {
+		return nil, err
+	}
+	if len(result) != 3 {
+		return nil, fmt.Errorf("replace unique job: unexpected script result length %d", len(result))
+	}
+	outcome, err := redisScriptString(result[0])
+	if err != nil {
+		return nil, fmt.Errorf("replace unique job outcome: %w", err)
+	}
+	existingID, err := redisScriptString(result[1])
+	if err != nil {
+		return nil, fmt.Errorf("replace unique job existing ID: %w", err)
+	}
+	existingState, err := redisScriptString(result[2])
+	if err != nil {
+		return nil, fmt.Errorf("replace unique job existing state: %w", err)
+	}
+	return &UniqueClaimResult{
+		Outcome:       outcome,
+		ExistingID:    existingID,
+		ExistingState: existingState,
+	}, nil
 }
 
 // --- Workers ---
@@ -335,6 +444,55 @@ func (s *RedisStore) AcquireCronLock(ctx context.Context, key string, ttlMs int6
 	return s.client.SetNX(ctx, key, "1", ttl).Result()
 }
 
+func (s *RedisStore) ClaimCronOccurrence(ctx context.Context, name string, occurrenceMs int64, owner string, jobID string, nowMs int64, leaseMs int64) (*CronOccurrenceClaim, error) {
+	result, err := claimCronOccurrenceScript.Run(
+		ctx,
+		s.client,
+		[]string{cronOccurrenceKey(name, occurrenceMs)},
+		owner,
+		jobID,
+		nowMs,
+		leaseMs,
+		cronOccurrenceMarkerRetention.Milliseconds(),
+	).Slice()
+	if err != nil {
+		return nil, err
+	}
+	if len(result) != 2 {
+		return nil, fmt.Errorf("claim cron occurrence: unexpected script result length %d", len(result))
+	}
+	status, err := redisScriptString(result[0])
+	if err != nil {
+		return nil, fmt.Errorf("claim cron occurrence status: %w", err)
+	}
+	claimedJobID, err := redisScriptString(result[1])
+	if err != nil {
+		return nil, fmt.Errorf("claim cron occurrence job ID: %w", err)
+	}
+	return &CronOccurrenceClaim{Status: status, JobID: claimedJobID}, nil
+}
+
+func (s *RedisStore) CompleteCronOccurrence(ctx context.Context, name string, occurrenceMs int64, owner string, jobID string) error {
+	return completeCronOccurrenceScript.Run(
+		ctx,
+		s.client,
+		[]string{cronOccurrenceKey(name, occurrenceMs)},
+		owner,
+		jobID,
+		cronOccurrenceMarkerRetention.Milliseconds(),
+	).Err()
+}
+
+func (s *RedisStore) ReleaseCronOccurrence(ctx context.Context, name string, occurrenceMs int64, owner string, jobID string) error {
+	return releaseCronOccurrenceScript.Run(
+		ctx,
+		s.client,
+		[]string{cronOccurrenceKey(name, occurrenceMs)},
+		owner,
+		jobID,
+	).Err()
+}
+
 func (s *RedisStore) SetCronInstance(ctx context.Context, name string, jobID string) error {
 	return s.client.Set(ctx, cronInstanceKey(name), jobID, 0).Err()
 }
@@ -355,7 +513,10 @@ func (s *RedisStore) SaveWorkflow(ctx context.Context, id string, data map[strin
 
 func (s *RedisStore) GetWorkflow(ctx context.Context, id string) (map[string]string, error) {
 	data, err := s.client.HGetAll(ctx, workflowKey(id)).Result()
-	if err != nil || len(data) == 0 {
+	if err != nil {
+		return nil, fmt.Errorf("get workflow: %w", err)
+	}
+	if len(data) == 0 {
 		return nil, core.NewNotFoundError("Workflow", id)
 	}
 	return data, nil
@@ -374,11 +535,56 @@ func (s *RedisStore) GetWorkflowJobs(ctx context.Context, workflowID string) ([]
 }
 
 func (s *RedisStore) SetWorkflowResult(ctx context.Context, workflowID string, step int, result json.RawMessage) error {
-	return s.client.HSet(ctx, workflowKey(workflowID)+":results", strconv.Itoa(step), string(result)).Err()
+	return s.client.HSet(ctx, workflowResultsKey(workflowID), strconv.Itoa(step), string(result)).Err()
 }
 
 func (s *RedisStore) GetWorkflowResults(ctx context.Context, workflowID string) (map[string]string, error) {
-	return s.client.HGetAll(ctx, workflowKey(workflowID)+":results").Result()
+	return s.client.HGetAll(ctx, workflowResultsKey(workflowID)).Result()
+}
+
+// AtomicCancelWorkflow transitions a running workflow to cancelled and revokes
+// every pending or leased dispatch effect in the same Redis script.
+func (s *RedisStore) AtomicCancelWorkflow(ctx context.Context, workflowID string, completedAt string) (*WorkflowCancelResult, error) {
+	result, err := cancelWorkflowScript.Run(
+		ctx,
+		s.client,
+		[]string{
+			workflowKey(workflowID),
+			workflowEffectsKey(workflowID),
+			workflowsPendingKey(),
+		},
+		workflowID,
+		completedAt,
+	).Slice()
+	if err != nil {
+		return nil, err
+	}
+	if len(result) < 2 {
+		return nil, fmt.Errorf("cancel workflow: unexpected script result length %d", len(result))
+	}
+	applied, err := redisScriptInt64(result[0])
+	if err != nil {
+		return nil, fmt.Errorf("cancel workflow applied flag: %w", err)
+	}
+	stateValue, err := redisScriptString(result[1])
+	if err != nil {
+		return nil, fmt.Errorf("cancel workflow state: %w", err)
+	}
+	effectJobIDs := make([]string, 0, len(result)-2)
+	for i := 2; i < len(result); i++ {
+		jobID, convErr := redisScriptString(result[i])
+		if convErr != nil {
+			return nil, fmt.Errorf("cancel workflow effect job ID %d: %w", i-2, convErr)
+		}
+		if jobID != "" {
+			effectJobIDs = append(effectJobIDs, jobID)
+		}
+	}
+	return &WorkflowCancelResult{
+		Applied:      applied == 1,
+		State:        stateValue,
+		EffectJobIDs: effectJobIDs,
+	}, nil
 }
 
 // --- Atomic Lua script operations ---
@@ -405,17 +611,99 @@ func (s *RedisStore) AtomicPush(ctx context.Context, job *core.Job, score float6
 	).Err()
 }
 
+// AtomicPushIfAbsent creates and indexes a stable-ID job only when the job hash
+// is absent. It never rewrites or re-indexes an existing job.
+func (s *RedisStore) AtomicPushIfAbsent(ctx context.Context, job *core.Job, score float64, scheduled bool) (bool, error) {
+	h := jobToHash(job)
+	var args []any
+	for k, v := range h {
+		args = append(args, k, v)
+	}
+	args = append(args, "__score__", score, job.ID, job.Queue)
+
+	sortedSetKey := queueAvailableKey(job.Queue)
+	if scheduled {
+		sortedSetKey = scheduledKey()
+	}
+	result, err := pushJobIfAbsentScript.Run(ctx, s.client,
+		[]string{jobKey(job.ID), sortedSetKey, queuesKey()},
+		args...,
+	).Int64()
+	if err != nil {
+		return false, err
+	}
+	return result == 1, nil
+}
+
+// AtomicCancelJob cancels a job and removes all of its lifecycle indexes.
+func (s *RedisStore) AtomicCancelJob(ctx context.Context, jobID string, cancelledAt string) (*JobCancelResult, error) {
+	result, err := cancelJobScript.Run(ctx, s.client,
+		[]string{
+			jobKey(jobID),
+			scheduledKey(),
+			retryKey(),
+			visibilityKey(jobID),
+		},
+		jobID,
+		cancelledAt,
+	).Slice()
+	if err != nil {
+		return nil, err
+	}
+	if len(result) != 2 {
+		return nil, fmt.Errorf("cancel job: unexpected script result length %d", len(result))
+	}
+	cancelled, err := redisScriptInt64(result[0])
+	if err != nil {
+		return nil, fmt.Errorf("cancel job flag: %w", err)
+	}
+	previousState, err := redisScriptString(result[1])
+	if err != nil {
+		return nil, fmt.Errorf("cancel job previous state: %w", err)
+	}
+	return &JobCancelResult{
+		Cancelled:     cancelled == 1,
+		PreviousState: previousState,
+	}, nil
+}
+
 // AtomicFetch atomically pops from available, adds to active, and sets visibility.
 // Returns the job ID or empty string if queue is empty.
-func (s *RedisStore) AtomicFetch(ctx context.Context, queue string, visDeadline string) (string, error) {
+func (s *RedisStore) AtomicFetch(ctx context.Context, queue string, visDeadline string, startedAt string, workerID string) (string, error) {
 	result, err := fetchJobScript.Run(ctx, s.client,
 		[]string{queueAvailableKey(queue), queueActiveKey(queue)},
 		visDeadline,
+		startedAt,
+		workerID,
 	).Text()
 	if err != nil {
 		return "", err
 	}
 	return result, nil
+}
+
+// AtomicPromote moves a scheduled or retryable job to available only if the
+// job still has the expected source state.
+func (s *RedisStore) AtomicPromote(ctx context.Context, jobID string, queue string, fromState string, enqueuedAt string, score float64) (bool, error) {
+	sourceKey := scheduledKey()
+	if fromState == core.StateRetryable {
+		sourceKey = retryKey()
+	}
+	result, err := promoteJobScript.Run(ctx, s.client,
+		[]string{
+			jobKey(jobID),
+			sourceKey,
+			queueAvailableKey(queue),
+		},
+		jobID,
+		fromState,
+		enqueuedAt,
+		score,
+	).Int64()
+	if err != nil {
+		return false, err
+	}
+	return result == 1, nil
 }
 
 // AtomicAck atomically completes a job: updates state, removes from active, clears visibility, increments completed.
@@ -428,6 +716,19 @@ func (s *RedisStore) AtomicAck(ctx context.Context, jobID string, queue string, 
 			queueCompletedKey(queue),
 		},
 		jobID, completedAt, result,
+	).Err()
+}
+
+// AtomicRequeue atomically returns an active job to its available queue.
+func (s *RedisStore) AtomicRequeue(ctx context.Context, jobID string, queue string, enqueuedAt string, score float64) error {
+	return requeueJobScript.Run(ctx, s.client,
+		[]string{
+			jobKey(jobID),
+			queueActiveKey(queue),
+			visibilityKey(jobID),
+			queueAvailableKey(queue),
+		},
+		jobID, enqueuedAt, score,
 	).Err()
 }
 
@@ -461,27 +762,252 @@ func (s *RedisStore) AtomicNackRetry(ctx context.Context, jobID string, queue st
 	).Err()
 }
 
+// AtomicAdvanceWorkflow applies one workflow job outcome, durably records any
+// required dispatch effects in the workflow outbox, and returns ownership and
+// pending-effect information for the caller that drains the outbox.
+func (s *RedisStore) AtomicAdvanceWorkflow(ctx context.Context, input WorkflowAdvanceInput) (*WorkflowAdvanceResult, error) {
+	failedFlag := "0"
+	if input.Failed {
+		failedFlag = "1"
+	}
+
+	scriptResult, err := advanceWorkflowScript.Run(
+		ctx,
+		s.client,
+		[]string{
+			workflowKey(input.WorkflowID),
+			workflowAdvancedKey(input.WorkflowID),
+			workflowResultsKey(input.WorkflowID),
+			workflowEffectsKey(input.WorkflowID),
+			workflowsPendingKey(),
+		},
+		input.JobID,
+		input.Step,
+		string(input.Result),
+		failedFlag,
+		input.CompletedAt,
+		input.WorkflowID,
+		input.NextChainJobID,
+		input.OnCompleteJobID,
+		input.OnSuccessJobID,
+		input.OnFailureJobID,
+	).Slice()
+	if err != nil {
+		return nil, err
+	}
+	if len(scriptResult) != 10 {
+		return nil, fmt.Errorf("advance workflow: unexpected script result length %d", len(scriptResult))
+	}
+
+	values := make([]int64, 8)
+	for i, resultIndex := range []int{0, 3, 4, 5, 6, 7, 8, 9} {
+		value, convErr := redisScriptInt64(scriptResult[resultIndex])
+		if convErr != nil {
+			return nil, fmt.Errorf("advance workflow result %d: %w", resultIndex, convErr)
+		}
+		values[i] = value
+	}
+	workflowType, err := redisScriptString(scriptResult[1])
+	if err != nil {
+		return nil, fmt.Errorf("advance workflow type: %w", err)
+	}
+	stateValue, err := redisScriptString(scriptResult[2])
+	if err != nil {
+		return nil, fmt.Errorf("advance workflow state: %w", err)
+	}
+
+	return &WorkflowAdvanceResult{
+		Applied:           values[0] == 1,
+		WorkflowType:      workflowType,
+		State:             stateValue,
+		Completed:         int(values[1]),
+		Failed:            int(values[2]),
+		Total:             int(values[3]),
+		TerminalOwner:     values[4] == 1,
+		EnqueueNext:       values[5] == 1,
+		NextStep:          int(values[6]),
+		HasPendingEffects: values[7] == 1,
+	}, nil
+}
+
+// GetWorkflowEffects returns the raw effect records (effectID -> status|jobID).
+func (s *RedisStore) GetWorkflowEffects(ctx context.Context, workflowID string) (map[string]string, error) {
+	return s.client.HGetAll(ctx, workflowEffectsKey(workflowID)).Result()
+}
+
+// ClaimWorkflowEffect leases one pending or lease-expired effect to a drainer.
+func (s *RedisStore) ClaimWorkflowEffect(ctx context.Context, workflowID string, effectID string, owner string, nowMs int64, leaseMs int64) (*WorkflowEffectClaim, error) {
+	result, err := claimWorkflowEffectScript.Run(
+		ctx,
+		s.client,
+		[]string{
+			workflowKey(workflowID),
+			workflowEffectsKey(workflowID),
+		},
+		effectID,
+		owner,
+		nowMs,
+		leaseMs,
+	).Slice()
+	if err != nil {
+		return nil, err
+	}
+	if len(result) != 2 {
+		return nil, fmt.Errorf("claim workflow effect: unexpected script result length %d", len(result))
+	}
+	status, err := redisScriptString(result[0])
+	if err != nil {
+		return nil, fmt.Errorf("claim workflow effect status: %w", err)
+	}
+	claimedJobID, err := redisScriptString(result[1])
+	if err != nil {
+		return nil, fmt.Errorf("claim workflow effect job ID: %w", err)
+	}
+	return &WorkflowEffectClaim{Status: status, JobID: claimedJobID}, nil
+}
+
+// AtomicCreateWorkflowEffectJob creates a stable effect job only while the
+// caller still owns the effect lease and the workflow has not been cancelled.
+func (s *RedisStore) AtomicCreateWorkflowEffectJob(ctx context.Context, workflowID string, effectID string, owner string, job *core.Job, score float64, scheduled bool) (string, error) {
+	h := jobToHash(job)
+	args := []any{
+		effectID,
+		owner,
+		score,
+		job.ID,
+		job.Queue,
+	}
+	for k, v := range h {
+		args = append(args, k, v)
+	}
+
+	sortedSetKey := queueAvailableKey(job.Queue)
+	if scheduled {
+		sortedSetKey = scheduledKey()
+	}
+	result, err := createWorkflowEffectJobScript.Run(
+		ctx,
+		s.client,
+		[]string{
+			workflowKey(workflowID),
+			workflowEffectsKey(workflowID),
+			jobKey(job.ID),
+			sortedSetKey,
+			queuesKey(),
+		},
+		args...,
+	).Text()
+	if err != nil {
+		return "", err
+	}
+	return result, nil
+}
+
+// CompleteWorkflowEffect marks a leased effect done exactly once, optionally
+// appending the job to the workflow job list, and cleans up a drained outbox.
+func (s *RedisStore) CompleteWorkflowEffect(ctx context.Context, workflowID string, effectID string, owner string, jobID string, appendJob bool) (bool, error) {
+	appendFlag := "0"
+	if appendJob {
+		appendFlag = "1"
+	}
+	result, err := completeWorkflowEffectScript.Run(
+		ctx,
+		s.client,
+		[]string{
+			workflowKey(workflowID),
+			workflowEffectsKey(workflowID),
+			workflowKey(workflowID) + ":jobs",
+			workflowsPendingKey(),
+		},
+		effectID,
+		owner,
+		jobID,
+		appendFlag,
+		workflowID,
+	).Int64()
+	if err != nil {
+		return false, err
+	}
+	return result == 1, nil
+}
+
+// ReleaseWorkflowEffect returns a leased effect to pending after a failed
+// dispatch so it can be retried promptly.
+func (s *RedisStore) ReleaseWorkflowEffect(ctx context.Context, workflowID string, effectID string, owner string) error {
+	return releaseWorkflowEffectScript.Run(
+		ctx,
+		s.client,
+		[]string{workflowEffectsKey(workflowID)},
+		effectID,
+		owner,
+	).Err()
+}
+
+// GetWorkflowsWithPendingEffects returns workflow IDs that still have effects.
+func (s *RedisStore) GetWorkflowsWithPendingEffects(ctx context.Context) ([]string, error) {
+	return s.client.SMembers(ctx, workflowsPendingKey()).Result()
+}
+
 // --- Redis key builders ---
 
-func jobKey(id string) string                  { return fmt.Sprintf("%sjob:%s", keyPrefix, id) }
-func queueAvailableKey(name string) string     { return fmt.Sprintf("%squeue:%s:available", keyPrefix, name) }
-func queueActiveKey(name string) string        { return fmt.Sprintf("%squeue:%s:active", keyPrefix, name) }
-func queuePausedKey(name string) string        { return fmt.Sprintf("%squeue:%s:paused", keyPrefix, name) }
-func queuesKey() string                        { return keyPrefix + "queues" }
-func scheduledKey() string                     { return keyPrefix + "scheduled" }
-func retryKey() string                         { return keyPrefix + "retry" }
-func deadKey() string                          { return keyPrefix + "dead" }
-func uniqueKey(fingerprint string) string      { return fmt.Sprintf("%sunique:%s", keyPrefix, fingerprint) }
-func cronKey(name string) string               { return fmt.Sprintf("%scron:%s", keyPrefix, name) }
-func cronNamesKey() string                     { return keyPrefix + "cron:names" }
-func workflowKey(id string) string             { return fmt.Sprintf("%sworkflow:%s", keyPrefix, id) }
-func workerKey(id string) string               { return fmt.Sprintf("%sworker:%s", keyPrefix, id) }
-func workersKey() string                       { return keyPrefix + "workers" }
-func visibilityKey(jobID string) string        { return fmt.Sprintf("%svisibility:%s", keyPrefix, jobID) }
-func cronInstanceKey(name string) string       { return fmt.Sprintf("%scron:%s:instance", keyPrefix, name) }
-func queueCompletedKey(name string) string     { return fmt.Sprintf("%squeue:%s:completed", keyPrefix, name) }
-func queueRateLimitKey(name string) string     { return fmt.Sprintf("%squeue:%s:ratelimit", keyPrefix, name) }
-func queueRateLimitLastKey(name string) string { return fmt.Sprintf("%squeue:%s:ratelimit:last", keyPrefix, name) }
+func jobKey(id string) string { return fmt.Sprintf("%sjob:%s", keyPrefix, id) }
+func queueAvailableKey(name string) string {
+	return fmt.Sprintf("%squeue:%s:available", keyPrefix, name)
+}
+func queueActiveKey(name string) string    { return fmt.Sprintf("%squeue:%s:active", keyPrefix, name) }
+func queuePausedKey(name string) string    { return fmt.Sprintf("%squeue:%s:paused", keyPrefix, name) }
+func queuesKey() string                    { return keyPrefix + "queues" }
+func scheduledKey() string                 { return keyPrefix + "scheduled" }
+func retryKey() string                     { return keyPrefix + "retry" }
+func deadKey() string                      { return keyPrefix + "dead" }
+func uniqueKey(fingerprint string) string  { return fmt.Sprintf("%sunique:%s", keyPrefix, fingerprint) }
+func cronKey(name string) string           { return fmt.Sprintf("%scron:%s", keyPrefix, name) }
+func cronNamesKey() string                 { return keyPrefix + "cron:names" }
+func workflowKey(id string) string         { return fmt.Sprintf("%sworkflow:%s", keyPrefix, id) }
+func workflowAdvancedKey(id string) string { return workflowKey(id) + ":advanced" }
+func workflowResultsKey(id string) string  { return workflowKey(id) + ":results" }
+func workflowEffectsKey(id string) string  { return workflowKey(id) + ":effects" }
+func workflowsPendingKey() string          { return keyPrefix + "workflows:pending" }
+func workerKey(id string) string           { return fmt.Sprintf("%sworker:%s", keyPrefix, id) }
+func workersKey() string                   { return keyPrefix + "workers" }
+func visibilityKey(jobID string) string    { return fmt.Sprintf("%svisibility:%s", keyPrefix, jobID) }
+func cronInstanceKey(name string) string   { return fmt.Sprintf("%scron:%s:instance", keyPrefix, name) }
+func cronOccurrenceKey(name string, occurrenceMs int64) string {
+	return fmt.Sprintf("%scron:%s:occurrence:%d", keyPrefix, name, occurrenceMs)
+}
+func queueCompletedKey(name string) string {
+	return fmt.Sprintf("%squeue:%s:completed", keyPrefix, name)
+}
+func queueRateLimitKey(name string) string {
+	return fmt.Sprintf("%squeue:%s:ratelimit", keyPrefix, name)
+}
+func queueRateLimitLastKey(name string) string {
+	return fmt.Sprintf("%squeue:%s:ratelimit:last", keyPrefix, name)
+}
+
+func redisScriptString(value any) (string, error) {
+	switch value := value.(type) {
+	case string:
+		return value, nil
+	case []byte:
+		return string(value), nil
+	default:
+		return "", fmt.Errorf("unexpected Redis value type %T", value)
+	}
+}
+
+func redisScriptInt64(value any) (int64, error) {
+	switch value := value.(type) {
+	case int64:
+		return value, nil
+	case string:
+		return strconv.ParseInt(value, 10, 64)
+	case []byte:
+		return strconv.ParseInt(string(value), 10, 64)
+	default:
+		return 0, fmt.Errorf("unexpected Redis value type %T", value)
+	}
+}
 
 // --- Job serialization ---
 
@@ -497,7 +1023,7 @@ func jobToHash(job *core.Job) map[string]any {
 	if job.Args != nil {
 		h["args"] = string(job.Args)
 	}
-	if job.Meta != nil && len(job.Meta) > 0 {
+	if len(job.Meta) > 0 {
 		h["meta"] = string(job.Meta)
 	}
 	if job.Priority != nil {
@@ -518,6 +1044,9 @@ func jobToHash(job *core.Job) map[string]any {
 	if job.StartedAt != "" {
 		h["started_at"] = job.StartedAt
 	}
+	if job.WorkerID != "" {
+		h["worker_id"] = job.WorkerID
+	}
 	if job.CompletedAt != "" {
 		h["completed_at"] = job.CompletedAt
 	}
@@ -527,10 +1056,10 @@ func jobToHash(job *core.Job) map[string]any {
 	if job.ScheduledAt != "" {
 		h["scheduled_at"] = job.ScheduledAt
 	}
-	if job.Result != nil && len(job.Result) > 0 {
+	if len(job.Result) > 0 {
 		h["result"] = string(job.Result)
 	}
-	if job.Error != nil && len(job.Error) > 0 {
+	if len(job.Error) > 0 {
 		h["error"] = string(job.Error)
 	}
 	if len(job.Tags) > 0 {
@@ -614,6 +1143,9 @@ func hashToJob(data map[string]string) *core.Job {
 	}
 	if v, ok := data["started_at"]; ok && v != "" {
 		job.StartedAt = v
+	}
+	if v, ok := data["worker_id"]; ok && v != "" {
+		job.WorkerID = v
 	}
 	if v, ok := data["completed_at"]; ok && v != "" {
 		job.CompletedAt = v

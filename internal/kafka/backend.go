@@ -190,15 +190,22 @@ func (b *KafkaBackend) Fetch(ctx context.Context, queues []string, count int, wo
 				effectiveVisTimeout = core.DefaultVisibilityTimeoutMs
 			}
 			deadline := core.FormatTime(now.Add(time.Duration(effectiveVisTimeout) * time.Millisecond))
+			startedAt := core.FormatTime(now)
 
-			// Atomically: pop from available, add to active, set visibility
-			jobID, err := b.store.AtomicFetch(ctx, queue, deadline)
+			// Atomically: validate available state, transition to active, move
+			// queue indexes, and set visibility.
+			jobID, err := b.store.AtomicFetch(ctx, queue, deadline, startedAt, workerID)
 			if err != nil || jobID == "" {
 				break
 			}
 
 			job, err := b.store.GetJob(ctx, jobID)
 			if err != nil {
+				continue
+			}
+			if job.State != core.StateActive {
+				// A cancellation may have won immediately after the atomic
+				// fetch. Never return or mutate that now-cancelled job.
 				continue
 			}
 
@@ -218,13 +225,6 @@ func (b *KafkaBackend) Fetch(ctx context.Context, queues []string, count int, wo
 				customDeadline := core.FormatTime(now.Add(time.Duration(*job.VisibilityTimeoutMs) * time.Millisecond))
 				b.store.SetVisibility(ctx, jobID, customDeadline)
 			}
-
-			// Update job state fields
-			b.store.UpdateJob(ctx, jobID, map[string]any{
-				"state":      core.StateActive,
-				"started_at": core.FormatTime(now),
-				"worker_id":  workerID,
-			})
 
 			b.store.RecordFetch(ctx, queue)
 

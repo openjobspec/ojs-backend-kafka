@@ -421,9 +421,9 @@ func TestUniqueJobs(t *testing.T) {
 		t.Errorf("got %q, want %q", got, "job-u1")
 	}
 
-	_, err = store.GetUniqueJobID(ctx, "fp-nonexistent")
-	if err == nil {
-		t.Error("expected error for nonexistent fingerprint")
+	got, err = store.GetUniqueJobID(ctx, "fp-nonexistent")
+	if err != nil || got != "" {
+		t.Errorf("missing fingerprint = %q, %v; want empty without error", got, err)
 	}
 }
 
@@ -685,7 +685,7 @@ func TestAtomicFetch(t *testing.T) {
 
 	// Fetch should return lowest score first
 	deadline := core.FormatTime(time.Now().Add(30 * time.Second))
-	jobID, err := store.AtomicFetch(ctx, "q1", deadline)
+	jobID, err := store.AtomicFetch(ctx, "q1", deadline, core.NowFormatted(), "worker-1")
 	if err != nil {
 		t.Fatalf("atomic fetch: %v", err)
 	}
@@ -704,6 +704,13 @@ func TestAtomicFetch(t *testing.T) {
 	if !found {
 		t.Error("expected job-f2 in active set")
 	}
+	fetched, err := store.GetJob(ctx, "job-f2")
+	if err != nil {
+		t.Fatalf("get fetched job: %v", err)
+	}
+	if fetched.State != core.StateActive || fetched.StartedAt == "" || fetched.WorkerID != "worker-1" {
+		t.Fatalf("fetched job transition was not atomic: %+v", fetched)
+	}
 
 	// Visibility should be set
 	vis, err := store.GetVisibility(ctx, "job-f2")
@@ -715,8 +722,8 @@ func TestAtomicFetch(t *testing.T) {
 	}
 
 	// Fetch from empty queue
-	store.AtomicFetch(ctx, "q1", deadline) // pop job-f1
-	jobID, _ = store.AtomicFetch(ctx, "q1", deadline)
+	store.AtomicFetch(ctx, "q1", deadline, core.NowFormatted(), "worker-1") // pop job-f1
+	jobID, _ = store.AtomicFetch(ctx, "q1", deadline, core.NowFormatted(), "worker-1")
 	if jobID != "" {
 		t.Errorf("expected empty string from empty queue, got %q", jobID)
 	}
@@ -738,7 +745,7 @@ func TestAtomicAck(t *testing.T) {
 	}, 100.0, false)
 
 	deadline := core.FormatTime(time.Now().Add(30 * time.Second))
-	store.AtomicFetch(ctx, "q1", deadline)
+	store.AtomicFetch(ctx, "q1", deadline, core.NowFormatted(), "worker-1")
 
 	// Ack
 	now := core.FormatTime(time.Now())
@@ -790,7 +797,7 @@ func TestAtomicNackDiscard(t *testing.T) {
 		CreatedAt: core.FormatTime(time.Now()),
 	}, 100.0, false)
 	deadline := core.FormatTime(time.Now().Add(30 * time.Second))
-	store.AtomicFetch(ctx, "q1", deadline)
+	store.AtomicFetch(ctx, "q1", deadline, core.NowFormatted(), "worker-1")
 
 	now := core.FormatTime(time.Now())
 	errJSON := `{"message":"fatal error"}`
@@ -835,7 +842,7 @@ func TestAtomicNackDiscardWithoutDead(t *testing.T) {
 		CreatedAt: core.FormatTime(time.Now()),
 	}, 100.0, false)
 	deadline := core.FormatTime(time.Now().Add(30 * time.Second))
-	store.AtomicFetch(ctx, "q1", deadline)
+	store.AtomicFetch(ctx, "q1", deadline, core.NowFormatted(), "worker-1")
 
 	now := core.FormatTime(time.Now())
 	err := store.AtomicNackDiscard(ctx, "job-nd2", "q1", now, "", "[]", "1", false, time.Now().UnixMilli())
@@ -863,7 +870,7 @@ func TestAtomicNackRetry(t *testing.T) {
 		CreatedAt: core.FormatTime(time.Now()),
 	}, 100.0, false)
 	deadline := core.FormatTime(time.Now().Add(30 * time.Second))
-	store.AtomicFetch(ctx, "q1", deadline)
+	store.AtomicFetch(ctx, "q1", deadline, core.NowFormatted(), "worker-1")
 
 	errJSON := `{"message":"transient"}`
 	histJSON := `[{"message":"transient"}]`
