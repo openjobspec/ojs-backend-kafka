@@ -311,9 +311,9 @@ func (s *Server) DeleteDeadLetter(ctx context.Context, req *ojsv1.DeleteDeadLett
 
 func (s *Server) RegisterCron(ctx context.Context, req *ojsv1.RegisterCronRequest) (*ojsv1.RegisterCronResponse, error) {
 	argsJSON, err := json.Marshal(valuesToInterface(req.Args))
-if err != nil {
-return nil, status.Errorf(codes.InvalidArgument, "failed to marshal cron args: %v", err)
-}
+	if err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "failed to marshal cron args: %v", err)
+	}
 
 	cronJob := &core.CronJob{
 		Name:       req.Name,
@@ -479,11 +479,12 @@ func (s *Server) StreamEvents(req *ojsv1.StreamEventsRequest, stream ojsv1.OJSSe
 		err   error
 	)
 
-	if req.JobId != "" {
+	switch {
+	case req.JobId != "":
 		ch, unsub, err = s.subscriber.SubscribeJob(req.JobId)
-	} else if len(req.Queues) == 1 {
+	case len(req.Queues) == 1:
 		ch, unsub, err = s.subscriber.SubscribeQueue(req.Queues[0])
-	} else {
+	default:
 		ch, unsub, err = s.subscriber.SubscribeAll()
 	}
 	if err != nil {
@@ -644,8 +645,6 @@ func parseRFC3339(s string) *timestamppb.Timestamp {
 	}
 	return timestamppb.New(t)
 }
-
-func intPtr(v int) *int { return &v }
 
 // directiveToWorkerState maps a backend heartbeat directive string to the
 // protobuf WorkerState enum.

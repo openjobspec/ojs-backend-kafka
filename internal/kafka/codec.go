@@ -27,14 +27,14 @@ func EncodeEvent(event *LifecycleEvent) ([]byte, error) {
 
 // LifecycleEvent represents an OJS job lifecycle event published to Kafka.
 type LifecycleEvent struct {
-	EventType   string          `json:"event_type"`
-	JobID       string          `json:"job_id"`
-	Queue       string          `json:"queue"`
-	JobType     string          `json:"job_type"`
-	State       string          `json:"state"`
-	Attempt     int             `json:"attempt,omitempty"`
-	Timestamp   string          `json:"timestamp"`
-	Result      json.RawMessage `json:"result,omitempty"`
-	Error       json.RawMessage `json:"error,omitempty"`
-	WorkflowID  string          `json:"workflow_id,omitempty"`
+	EventType  string          `json:"event_type"`
+	JobID      string          `json:"job_id"`
+	Queue      string          `json:"queue"`
+	JobType    string          `json:"job_type"`
+	State      string          `json:"state"`
+	Attempt    int             `json:"attempt,omitempty"`
+	Timestamp  string          `json:"timestamp"`
+	Result     json.RawMessage `json:"result,omitempty"`
+	Error      json.RawMessage `json:"error,omitempty"`
+	WorkflowID string          `json:"workflow_id,omitempty"`
 }

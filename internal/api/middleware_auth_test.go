@@ -70,4 +70,3 @@ func TestKeyAuth_SkipPaths(t *testing.T) {
 		}
 	}
 }
-
