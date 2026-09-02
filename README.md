@@ -87,7 +87,7 @@ ojs.events                    -- lifecycle events
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.25+
 - Docker (for Kafka + Redis)
 
 ### Run with Docker Compose
@@ -218,4 +218,3 @@ You can also use the legacy env vars `OJS_OTEL_ENABLED=true` and `OJS_OTEL_ENDPO
 ## License
 
 Apache-2.0
-

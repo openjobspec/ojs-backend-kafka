@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"nhooyr.io/websocket"
+	"github.com/coder/websocket"
 
 	commonapi "github.com/openjobspec/ojs-go-backend-common/api"
 	commoncore "github.com/openjobspec/ojs-go-backend-common/core"

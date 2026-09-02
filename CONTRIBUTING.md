@@ -6,7 +6,7 @@ Thank you for your interest in contributing! This document provides guidelines a
 
 ### Prerequisites
 
-- Go 1.24+
+- Go 1.25+
 - Docker (for Kafka + Redis)
 
 ### Local Development Setup
@@ -79,4 +79,3 @@ make lint           # Run go vet + golangci-lint
 ## License
 
 By contributing, you agree that your contributions will be licensed under the Apache-2.0 License.
-
