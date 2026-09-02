@@ -1,0 +1,67 @@
+name: Bootstrap pre-release foundations
+description: Build an immutable local Go proxy for unpublished foundation modules
+
+inputs:
+  common-sha:
+    description: Exact ojs-go-backend-common commit SHA
+    required: true
+  proto-sha:
+    description: Exact ojs-proto commit SHA
+    required: true
+  read-token:
+    description: Token with read access to the private backend-common repository
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Validate immutable foundation inputs
+      shell: bash
+      env:
+        COMMON_SHA: ${{ inputs.common-sha }}
+        PROTO_SHA: ${{ inputs.proto-sha }}
+        FOUNDATION_READ_TOKEN: ${{ inputs.read-token }}
+      run: |
+        if [[ ! "$COMMON_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::FOUNDATION_COMMON_SHA must be an exact 40-character lowercase commit SHA"
+          exit 1
+        fi
+        if [[ ! "$PROTO_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          echo "::error::FOUNDATION_PROTO_SHA must be an exact 40-character lowercase commit SHA"
+          exit 1
+        fi
+        if [ -z "$FOUNDATION_READ_TOKEN" ]; then
+          echo "::error::FOUNDATION_READ_TOKEN is required for ojs-go-backend-common"
+          exit 1
+        fi
+
+    - name: Check out backend-common
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      with:
+        repository: openjobspec/ojs-go-backend-common
+        ref: ${{ inputs.common-sha }}
+        token: ${{ inputs.read-token }}
+        path: .foundation/ojs-go-backend-common
+        persist-credentials: false
+
+    - name: Check out proto
+      uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+      with:
+        repository: openjobspec/ojs-proto
+        ref: ${{ inputs.proto-sha }}
+        path: .foundation/ojs-proto
+        persist-credentials: false
+
+    - name: Build combined v0.5.0 module proxy
+      shell: bash
+      run: |
+        proxy="$GITHUB_WORKSPACE/.foundation/proxy"
+        mkdir -p "$proxy"
+        (
+          cd "$GITHUB_WORKSPACE/.foundation/ojs-proto"
+          python3 scripts/build-local-proxy.py \
+            --module-root ../ojs-go-backend-common "$proxy" v0.5.0
+          python3 scripts/build-local-proxy.py "$proxy" v0.5.0
+        )
+        echo "GOPROXY=file://${proxy},https://proxy.golang.org,direct" >> "$GITHUB_ENV"
+        echo "GONOSUMDB=github.com/openjobspec/*" >> "$GITHUB_ENV"

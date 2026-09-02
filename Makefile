@@ -3,6 +3,7 @@
 CONFORMANCE_RUNNER = ../ojs-conformance/runner/http
 CONFORMANCE_SUITES = ../../suites
 OJS_URL ?= http://localhost:8080
+GOLANGCI_LINT_VERSION ?= v2.12.2
 KAFKA_BROKERS ?= localhost:9092
 REDIS_URL ?= redis://localhost:6379
 
@@ -16,7 +17,7 @@ test:
 	go test ./... -race -cover
 
 lint:
-	go vet ./...
+	GOWORK=off go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION) run ./...
 
 clean:
 	rm -rf bin/
