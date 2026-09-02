@@ -386,7 +386,13 @@ func (s *Server) ListCron(ctx context.Context, req *ojsv1.ListCronRequest) (*ojs
 // --- Workflow RPCs ---
 
 func (s *Server) CreateWorkflow(ctx context.Context, req *ojsv1.CreateWorkflowRequest) (*ojsv1.CreateWorkflowResponse, error) {
-	wfReq := protoToWorkflowRequest(req)
+	wfReq, err := convertCreateWorkflow(req)
+	if err != nil {
+		if isUnsupportedWorkflowConversion(err) {
+			return nil, status.Error(codes.Unimplemented, err.Error())
+		}
+		return nil, status.Error(codes.InvalidArgument, err.Error())
+	}
 
 	wf, err := s.backend.CreateWorkflow(ctx, wfReq)
 	if err != nil {
