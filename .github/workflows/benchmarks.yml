@@ -10,21 +10,14 @@ permissions:
   contents: write
   pull-requests: write
 
+env:
+  GOWORK: "off"
+  GOFLAGS: "-mod=readonly"
+
 jobs:
   benchmark:
     name: Performance Benchmarks
     runs-on: ubuntu-latest
-
-    services:
-      redis:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 5
 
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
@@ -33,18 +26,16 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Run benchmarks
-        env:
-          REDIS_URL: redis://localhost:6379
+      - name: Run mocked HTTP adapter benchmarks
         run: |
-          go test ./internal/... -bench=. -benchmem -count=5 -run='^$' -timeout 10m | tee /tmp/bench-results.txt
+          go test ./internal/api/ -bench=. -benchmem -count=5 -run='^$' -timeout 10m | tee benchmark-results.txt
 
       - name: Store benchmark result
-        uses: benchmark-action/github-action-benchmark@v1
+        uses: benchmark-action/github-action-benchmark@4bdcce38c94cec68da58d012ac24b7b1155efe8b # v1.20.7
         with:
           name: OJS KAFKA Backend Benchmarks
           tool: go
-          output-file-path: /tmp/bench-results.txt
+          output-file-path: benchmark-results.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: ${{ github.ref == 'refs/heads/main' }}
           alert-threshold: '150%'

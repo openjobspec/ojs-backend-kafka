@@ -6,8 +6,8 @@ Security updates are provided for the most recent release line:
 
 | Version | Supported |
 | ------- | --------- |
-| 1.0.x   | ✅ |
-| < 1.0.0 | ❌ |
+| 0.5.x   | ✅ |
+| < 0.5.0 | ❌ |
 
 ## Reporting a vulnerability
 

@@ -30,4 +30,3 @@ func WriteOJSError(w http.ResponseWriter, err *core.OJSError) {
 func HandleError(w http.ResponseWriter, err error) {
 	httputil.HandleError(w, err)
 }
-

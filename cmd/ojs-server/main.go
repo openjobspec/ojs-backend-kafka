@@ -32,7 +32,7 @@ func main() {
 	})))
 
 	cfg := server.LoadConfig()
-	if err := cfg.BaseConfig.Validate(); err != nil {
+	if err := cfg.Validate(); err != nil {
 		slog.Error("configuration error", "error", err)
 		os.Exit(1)
 	}
@@ -52,36 +52,39 @@ func main() {
 		slog.Error("failed to initialize OpenTelemetry", "error", err)
 		os.Exit(1)
 	}
-	defer func() { _ = otelShutdown(context.Background()) }()
-
 	// Connect to Redis state store
 	store, err := state.NewRedisStore(cfg.RedisURL)
 	if err != nil {
 		slog.Error("failed to connect to Redis state store", "error", err)
 		os.Exit(1)
 	}
-	defer store.Close()
-
 	slog.Info("connected to Redis state store", "url", cfg.RedisURL)
 
 	// Create Kafka producer client
 	kafkaClient, err := kgo.NewClient(
 		kgo.SeedBrokers(cfg.KafkaBrokers...),
 		kgo.ProducerBatchCompression(kgo.SnappyCompression()),
-		kgo.RequiredAcks(kgo.LeaderAck()),
+		kgo.RequiredAcks(kgo.AllISRAcks()),
 		kgo.AllowAutoTopicCreation(),
 	)
 	if err != nil {
+		_ = store.Close()
+		_ = otelShutdown(context.Background())
 		slog.Error("failed to create Kafka client", "error", err)
 		os.Exit(1)
 	}
-	defer kafkaClient.Close()
 
 	// Verify Kafka connectivity
 	if err := kafkaClient.Ping(context.Background()); err != nil {
+		kafkaClient.Close()
+		_ = store.Close()
+		_ = otelShutdown(context.Background())
 		slog.Error("failed to connect to Kafka", "brokers", cfg.KafkaBrokers, "error", err)
 		os.Exit(1)
 	}
+	defer func() { _ = otelShutdown(context.Background()) }()
+	defer store.Close()
+	defer kafkaClient.Close()
 	slog.Info("connected to Kafka", "brokers", cfg.KafkaBrokers)
 
 	// Initialize Prometheus server info metric

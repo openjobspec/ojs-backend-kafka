@@ -57,6 +57,36 @@ func TestDecodeJob_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestEncodeDecodeJob_PreservesExplicitZeroMaxAttempts(t *testing.T) {
+	maxAttempts := 0
+	encoded, err := EncodeJob(&core.Job{
+		ID:          "job-no-retry",
+		Type:        "task.run",
+		State:       core.StateAvailable,
+		Queue:       "default",
+		MaxAttempts: &maxAttempts,
+	})
+	if err != nil {
+		t.Fatalf("EncodeJob() error = %v", err)
+	}
+
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &raw); err != nil {
+		t.Fatalf("decode encoded JSON: %v", err)
+	}
+	if string(raw["max_attempts"]) != "0" {
+		t.Fatalf("encoded max_attempts = %s, want 0", raw["max_attempts"])
+	}
+
+	decoded, err := DecodeJob(encoded)
+	if err != nil {
+		t.Fatalf("DecodeJob() error = %v", err)
+	}
+	if decoded.MaxAttempts == nil || *decoded.MaxAttempts != 0 {
+		t.Fatalf("decoded MaxAttempts = %v, want explicit 0", decoded.MaxAttempts)
+	}
+}
+
 func TestEncodeEvent(t *testing.T) {
 	event := &LifecycleEvent{
 		EventType: "job.enqueued",

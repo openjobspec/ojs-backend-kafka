@@ -9,8 +9,8 @@ package admin
 
 import (
 	"embed"
-	"io/fs"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"strings"
 )

@@ -13,20 +13,20 @@ import (
 
 // Re-export shared tracing utilities.
 var (
-	StartSpan         = tracing.StartSpan
-	StartSpanWithKind = tracing.StartSpanWithKind
-	StartConsumerSpan = tracing.StartConsumerSpan
-	RecordError       = tracing.RecordError
-	SetOK             = tracing.SetOK
-	InjectContext     = tracing.InjectContext
-	ExtractContext    = tracing.ExtractContext
-	InjectContextJSON = tracing.InjectContextJSON
+	StartSpan          = tracing.StartSpan
+	StartSpanWithKind  = tracing.StartSpanWithKind
+	StartConsumerSpan  = tracing.StartConsumerSpan
+	RecordError        = tracing.RecordError
+	SetOK              = tracing.SetOK
+	InjectContext      = tracing.InjectContext
+	ExtractContext     = tracing.ExtractContext
+	InjectContextJSON  = tracing.InjectContextJSON
 	ExtractContextJSON = tracing.ExtractContextJSON
-	JobID             = tracing.JobID
-	JobType           = tracing.JobType
-	JobQueue          = tracing.JobQueue
-	JobAttempt        = tracing.JobAttempt
-	Tracer            = tracing.Tracer
+	JobID              = tracing.JobID
+	JobType            = tracing.JobType
+	JobQueue           = tracing.JobQueue
+	JobAttempt         = tracing.JobAttempt
+	Tracer             = tracing.Tracer
 )
 
 // Setup initializes OpenTelemetry tracing for the backend.
@@ -51,4 +51,3 @@ func Setup(serviceName string) (func(), error) {
 
 	return func() { _ = shutdown(context.Background()) }, nil
 }
-

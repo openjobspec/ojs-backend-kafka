@@ -27,11 +27,12 @@ func New(backend *kafkabackend.KafkaBackend) *Scheduler {
 
 // Start begins all background scheduling goroutines.
 func (s *Scheduler) Start() {
-	s.wg.Add(4)
+	s.wg.Add(5)
 	go s.runLoop("scheduled-promoter", 1*time.Second, s.backend.PromoteScheduled)
 	go s.runLoop("retry-promoter", 200*time.Millisecond, s.backend.PromoteRetries)
 	go s.runLoop("stalled-reaper", 500*time.Millisecond, s.backend.RequeueStalled)
 	go s.runLoop("cron-scheduler", 10*time.Second, s.backend.FireCronJobs)
+	go s.runLoop("workflow-drainer", 1*time.Second, s.backend.DrainWorkflowEffects)
 }
 
 // Stop signals all background goroutines to stop and waits for them to finish.

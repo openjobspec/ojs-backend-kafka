@@ -1,22 +1,47 @@
+version: "2"
 linters:
+  default: none
   enable:
-    - errcheck
     - govet
+    - gocritic
+    - ineffassign
     - staticcheck
     - unused
-    - ineffassign
-    - gosimple
-    - gocyclo
-    - unparam
-    - bodyclose
-    - noctx
-
-linters-settings:
-  errcheck:
-    check-blank: false
-  gocyclo:
-    min-complexity: 15
-
-issues:
-  exclude-dirs:
-    - vendor
+  settings:
+    errcheck:
+      check-type-assertions: true
+    gocritic:
+      enabled-tags:
+        - diagnostic
+    gosec:
+      excludes:
+        - G104
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - gocritic
+          - gocyclo
+          - gosec
+        path: _test\.go
+      - linters:
+          - gocritic
+        path: internal/nats/admin\.go
+        text: "hugeParam: filters"
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

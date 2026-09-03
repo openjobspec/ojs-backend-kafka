@@ -7,6 +7,24 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-02
+
+### Changed
+- Upgraded gRPC, OpenTelemetry, Chi, and Go networking dependencies to patched
+  releases and raised the minimum Go version to 1.25.
+- Migrated native linting to pinned golangci-lint v2 and restored clean-cache
+  standalone module compilation.
+- Corrected workflow cancellation/effect fencing, unique replacement, cron
+  deduplication, and Redis transition atomicity.
+- Aligned release dependencies and hardened standalone CI, release artifacts,
+  checksums, and provenance for the coordinated 0.5.0 train.
+
+## [0.4.1] - 2026-04-21
+
+### Fixed
+- Closed a scheduler context cancellation leak.
+- Propagated previously ignored conversion, JSON marshaling, and Redis errors.
+
 ## [0.4.0] - 2026-04-20
 
 ### Added

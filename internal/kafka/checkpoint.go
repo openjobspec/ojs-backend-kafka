@@ -57,4 +57,3 @@ func (b *KafkaBackend) DeleteCheckpoint(ctx context.Context, jobID string) error
 	delete(b.cpStore.store, jobID)
 	return nil
 }
-

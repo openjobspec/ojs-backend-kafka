@@ -72,7 +72,6 @@ func NewRouterWithRealtime(backend core.Backend, cfg Config, publisher core.Even
 	if subscriber == nil {
 		bus := events.NewBus(events.BusConfig{BufferSize: 256})
 		if publisher == nil {
-			publisher = bus
 			jobHandler.SetEventPublisher(bus)
 			workerHandler.SetEventPublisher(bus)
 		}
@@ -82,8 +81,8 @@ func NewRouterWithRealtime(backend core.Backend, cfg Config, publisher core.Even
 	// System endpoints
 	r.Get("/ojs/manifest", systemHandler.Manifest)
 	r.Get("/ojs/v1/health", systemHandler.Health)
-r.Get("/healthz", systemHandler.Healthz)
-r.Get("/readyz", systemHandler.Readyz)
+	r.Get("/healthz", systemHandler.Healthz)
+	r.Get("/readyz", systemHandler.Readyz)
 
 	// Job endpoints
 	r.Post("/ojs/v1/jobs", jobHandler.Create)

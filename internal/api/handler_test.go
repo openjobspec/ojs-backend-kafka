@@ -15,32 +15,32 @@ import (
 
 // mockBackend implements core.Backend for testing.
 type mockBackend struct {
-	pushFunc           func(ctx context.Context, job *core.Job) (*core.Job, error)
-	pushBatchFunc      func(ctx context.Context, jobs []*core.Job) ([]*core.Job, error)
-	infoFunc           func(ctx context.Context, jobID string) (*core.Job, error)
-	cancelFunc         func(ctx context.Context, jobID string) (*core.Job, error)
-	fetchFunc          func(ctx context.Context, queues []string, count int, workerID string, vis int) ([]*core.Job, error)
-	ackFunc            func(ctx context.Context, jobID string, result []byte) (*core.AckResponse, error)
-	nackFunc           func(ctx context.Context, jobID string, jobErr *core.JobError, requeue bool) (*core.NackResponse, error)
-	healthFunc         func(ctx context.Context) (*core.HealthResponse, error)
-	heartbeatFunc      func(ctx context.Context, workerID string, activeJobs []string, vis int) (*core.HeartbeatResponse, error)
-	setWorkerStateFunc func(ctx context.Context, workerID string, state string) error
-	listQueuesFunc     func(ctx context.Context) ([]core.QueueInfo, error)
-	queueStatsFunc     func(ctx context.Context, name string) (*core.QueueStats, error)
-	pauseQueueFunc     func(ctx context.Context, name string) error
-	resumeQueueFunc    func(ctx context.Context, name string) error
-	listDeadLetterFunc func(ctx context.Context, limit, offset int) ([]*core.Job, int, error)
+	pushFunc             func(ctx context.Context, job *core.Job) (*core.Job, error)
+	pushBatchFunc        func(ctx context.Context, jobs []*core.Job) ([]*core.Job, error)
+	infoFunc             func(ctx context.Context, jobID string) (*core.Job, error)
+	cancelFunc           func(ctx context.Context, jobID string) (*core.Job, error)
+	fetchFunc            func(ctx context.Context, queues []string, count int, workerID string, vis int) ([]*core.Job, error)
+	ackFunc              func(ctx context.Context, jobID string, result []byte) (*core.AckResponse, error)
+	nackFunc             func(ctx context.Context, jobID string, jobErr *core.JobError, requeue bool) (*core.NackResponse, error)
+	healthFunc           func(ctx context.Context) (*core.HealthResponse, error)
+	heartbeatFunc        func(ctx context.Context, workerID string, activeJobs []string, vis int) (*core.HeartbeatResponse, error)
+	setWorkerStateFunc   func(ctx context.Context, workerID string, state string) error
+	listQueuesFunc       func(ctx context.Context) ([]core.QueueInfo, error)
+	queueStatsFunc       func(ctx context.Context, name string) (*core.QueueStats, error)
+	pauseQueueFunc       func(ctx context.Context, name string) error
+	resumeQueueFunc      func(ctx context.Context, name string) error
+	listDeadLetterFunc   func(ctx context.Context, limit, offset int) ([]*core.Job, int, error)
 	retryDeadLetterFunc  func(ctx context.Context, jobID string) (*core.Job, error)
 	deleteDeadLetterFunc func(ctx context.Context, jobID string) error
-	registerCronFunc   func(ctx context.Context, cron *core.CronJob) (*core.CronJob, error)
-	listCronFunc       func(ctx context.Context) ([]*core.CronJob, error)
-	deleteCronFunc     func(ctx context.Context, name string) (*core.CronJob, error)
-	createWorkflowFunc func(ctx context.Context, req *core.WorkflowRequest) (*core.Workflow, error)
-	getWorkflowFunc    func(ctx context.Context, id string) (*core.Workflow, error)
-	cancelWorkflowFunc func(ctx context.Context, id string) (*core.Workflow, error)
-	advanceWorkflowFunc func(ctx context.Context, workflowID string, jobID string, result json.RawMessage, failed bool) error
-	listJobsFunc       func(ctx context.Context, filters core.JobListFilters, limit, offset int) ([]*core.Job, int, error)
-	listWorkersFunc    func(ctx context.Context, limit, offset int) ([]*core.WorkerInfo, core.WorkerSummary, error)
+	registerCronFunc     func(ctx context.Context, cron *core.CronJob) (*core.CronJob, error)
+	listCronFunc         func(ctx context.Context) ([]*core.CronJob, error)
+	deleteCronFunc       func(ctx context.Context, name string) (*core.CronJob, error)
+	createWorkflowFunc   func(ctx context.Context, req *core.WorkflowRequest) (*core.Workflow, error)
+	getWorkflowFunc      func(ctx context.Context, id string) (*core.Workflow, error)
+	cancelWorkflowFunc   func(ctx context.Context, id string) (*core.Workflow, error)
+	advanceWorkflowFunc  func(ctx context.Context, workflowID string, jobID string, result json.RawMessage, failed bool) error
+	listJobsFunc         func(ctx context.Context, filters core.JobListFilters, limit, offset int) ([]*core.Job, int, error)
+	listWorkersFunc      func(ctx context.Context, limit, offset int) ([]*core.WorkerInfo, core.WorkerSummary, error)
 }
 
 func (m *mockBackend) Push(ctx context.Context, job *core.Job) (*core.Job, error) {
@@ -425,17 +425,21 @@ func TestJobCancel_Conflict(t *testing.T) {
 
 	h.Cancel(w, req)
 
-	// The Kafka handler maps ErrCodeInvalidRequest to 409 for cancel;
-	// ConflictError has code "conflict" which falls through to 500.
-	// However, the SQS pattern expects 409 for conflict errors.
-	// The Kafka Cancel handler only maps ErrCodeNotFound and ErrCodeInvalidRequest.
-	// Use ErrCodeInvalidRequest to trigger 409.
+	// Cancelling a job in a terminal state is a state conflict: the backend
+	// returns a ConflictError, which maps to 409 Conflict.
+	if w.Code != http.StatusConflict {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+	}
 }
 
-func TestJobCancel_ConflictViaInvalidRequest(t *testing.T) {
+func TestJobCancel_InvalidRequestMapsTo400(t *testing.T) {
+	// A genuine invalid-request error must map to 400 Bad Request, not 409.
+	// State conflicts (e.g. already-terminal jobs) are reported via
+	// ConflictError (see TestJobCancel_Conflict); ErrCodeInvalidRequest must
+	// never be silently treated as a conflict.
 	backend := &mockBackend{
 		cancelFunc: func(ctx context.Context, jobID string) (*core.Job, error) {
-			return nil, &core.OJSError{Code: core.ErrCodeInvalidRequest, Message: "already completed"}
+			return nil, core.NewInvalidRequestError("malformed job id", nil)
 		},
 	}
 	h := NewJobHandler(backend)
@@ -448,8 +452,8 @@ func TestJobCancel_ConflictViaInvalidRequest(t *testing.T) {
 
 	h.Cancel(w, req)
 
-	if w.Code != http.StatusConflict {
-		t.Errorf("status = %d, want %d", w.Code, http.StatusConflict)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", w.Code, http.StatusBadRequest)
 	}
 }
 
@@ -554,9 +558,11 @@ func TestWorkerAck_NotFound(t *testing.T) {
 }
 
 func TestWorkerAck_Conflict(t *testing.T) {
+	// Acking a job that is not in the 'active' state is a state conflict; the
+	// backend returns a ConflictError, which maps to 409 Conflict.
 	backend := &mockBackend{
 		ackFunc: func(ctx context.Context, jobID string, result []byte) (*core.AckResponse, error) {
-			return nil, &core.OJSError{Code: core.ErrCodeInvalidRequest, Message: "not active"}
+			return nil, core.NewConflictError("not active", nil)
 		},
 	}
 	h := NewWorkerHandler(backend)

@@ -12,6 +12,37 @@ jobs:
   release-please:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+
+      - name: Validate release progression
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          config = json.loads(Path("release-please-config.json").read_text())
+          manifest = json.loads(Path(".release-please-manifest.json").read_text())
+          package = config["packages"]["."]
+          target = Path("VERSION").read_text().strip()
+          current = manifest["."]
+
+          assert "release-as" not in config
+          assert "release-as" not in package
+          assert package["bump-minor-pre-major"] is True
+          assert package["bump-patch-for-minor-pre-major"] is False
+
+          def next_minor(version):
+              major, minor, _ = map(int, version.split("."))
+              return f"{major}.{minor + 1}.0"
+
+          if current != target:
+              assert target == next_minor(current), (current, target)
+          assert next_minor(target) != target
+          PY
+
       - uses: googleapis/release-please-action@c3fc4de07084f75a2b61a5b933069bda6edf3d5c # v4
         with:
-          release-type: go
+          config-file: release-please-config.json
+          manifest-file: .release-please-manifest.json
+          # A PAT or GitHub App token is required so the created v* tag triggers release.yml.
+          token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
